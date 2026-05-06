@@ -1,0 +1,15 @@
+.pitch-container {
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.pitch-header {
+  margin-bottom: 16px;
+}
+
+.tracking-tab,
+.voronoi-tab,
+.pitch-control-tab,
+.overview-tab {
+  padding: 16px 0;
+}
