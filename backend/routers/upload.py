@@ -11,6 +11,7 @@ import shutil
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 
 from routers import match as match_router
 from core.storage import storage_provider
@@ -82,11 +83,14 @@ async def upload_match(
     # ── Step 3: Save tracking JSONL ───────────────────────────────────────────
     tracking_path = RAW_DATA_DIR / f"{match_id}_tracking.jsonl"
     try:
-        # For simplicity in this iteration, we read the entire file.
-        # In a high-traffic production app, we'd use a streaming GCS upload.
+        # Stream the file directly to GCS/Disk in a background thread
+        # This prevents loading a 50MB+ file entirely into Cloud Run's limited RAM
         await tracking_jsonl.seek(0)
-        tracking_bytes = await tracking_jsonl.read()
-        storage_provider.write_bytes(tracking_path, tracking_bytes)
+        await run_in_threadpool(
+            storage_provider.upload_from_file_obj, 
+            tracking_path, 
+            tracking_jsonl.file
+        )
         logger.info("Saved tracking JSONL to %s", tracking_path)
     except Exception as exc:
         raise HTTPException(

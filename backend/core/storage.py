@@ -33,6 +33,10 @@ class BaseStorage:
     def write_bytes(self, path: Union[str, Path], content: bytes):
         raise NotImplementedError
 
+    def upload_from_file_obj(self, path: Union[str, Path], file_obj):
+        """Stream data from a file-like object."""
+        raise NotImplementedError
+
     def delete(self, path: Union[str, Path]):
         raise NotImplementedError
 
@@ -62,6 +66,13 @@ class LocalStorage(BaseStorage):
         p.parent.mkdir(parents=True, exist_ok=True)
         with open(p, "wb") as f:
             f.write(content)
+
+    def upload_from_file_obj(self, path: Union[str, Path], file_obj):
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        import shutil
+        with open(p, "wb") as f:
+            shutil.copyfileobj(file_obj, f)
 
     def delete(self, path: Union[str, Path]):
         p = Path(path)
@@ -99,6 +110,12 @@ class GCSStorage(BaseStorage):
     def write_bytes(self, path: Union[str, Path], content: bytes):
         blob = self.bucket.blob(self._get_blob_name(path))
         blob.upload_from_string(content, content_type="application/octet-stream")
+
+    def upload_from_file_obj(self, path: Union[str, Path], file_obj):
+        blob = self.bucket.blob(self._get_blob_name(path))
+        # Use 8MB chunks for faster GCS upload streaming
+        blob.chunk_size = 8 * 1024 * 1024 
+        blob.upload_from_file(file_obj, content_type="application/octet-stream")
 
     def delete(self, path: Union[str, Path]):
         blob = self.bucket.blob(self._get_blob_name(path))
