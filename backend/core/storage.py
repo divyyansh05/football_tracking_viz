@@ -98,6 +98,20 @@ class GCSStorage(BaseStorage):
         self.client = storage.Client()
         self.bucket_name = bucket_name
         self.bucket = self.client.bucket(bucket_name)
+        self.service_account_email = self._get_service_account_email()
+
+    def _get_service_account_email(self):
+        """Fetch the default service account email from the GCP Metadata Server if running on Cloud Run."""
+        import urllib.request
+        try:
+            req = urllib.request.Request(
+                "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email",
+                headers={"Metadata-Flavor": "Google"}
+            )
+            with urllib.request.urlopen(req, timeout=1) as res:
+                return res.read().decode('utf-8')
+        except Exception:
+            return None
 
     def _get_blob_name(self, path: Union[str, Path]) -> str:
         # Convert path like 'data/raw/1_match.json' to 'data/raw/1_match.json' string
@@ -128,12 +142,19 @@ class GCSStorage(BaseStorage):
     def generate_signed_url(self, path: Union[str, Path], expiration: int = 3600, method: str = "PUT") -> Optional[str]:
         import datetime
         blob = self.bucket.blob(self._get_blob_name(path))
-        url = blob.generate_signed_url(
-            version="v4",
-            expiration=datetime.timedelta(seconds=expiration),
-            method=method,
-            content_type="application/octet-stream"
-        )
+        
+        kwargs = {
+            "version": "v4",
+            "expiration": datetime.timedelta(seconds=expiration),
+            "method": method,
+            "content_type": "application/octet-stream"
+        }
+        
+        # If running on Cloud Run, use the service account email for remote IAM signing
+        if self.service_account_email:
+            kwargs["service_account_email"] = self.service_account_email
+            
+        url = blob.generate_signed_url(**kwargs)
         return url
 
     def delete(self, path: Union[str, Path]):
