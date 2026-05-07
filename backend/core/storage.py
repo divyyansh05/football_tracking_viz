@@ -101,16 +101,33 @@ class GCSStorage(BaseStorage):
         self.service_account_email = self._get_service_account_email()
 
     def _get_service_account_email(self):
-        """Fetch the default service account email from the GCP Metadata Server if running on Cloud Run."""
+        """Fetch the default service account email for IAM remote signing."""
+        import os
+        # 1. Check Env Var
+        sa = os.getenv("GCP_SERVICE_ACCOUNT")
+        if sa:
+            return sa
+            
+        # 2. Check google.auth
+        import google.auth
+        try:
+            credentials, _ = google.auth.default()
+            if hasattr(credentials, 'service_account_email') and credentials.service_account_email:
+                return credentials.service_account_email
+        except Exception as e:
+            logger.warning("google.auth failed to get SA email: %s", e)
+
+        # 3. Fallback to metadata server
         import urllib.request
         try:
             req = urllib.request.Request(
                 "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email",
                 headers={"Metadata-Flavor": "Google"}
             )
-            with urllib.request.urlopen(req, timeout=1) as res:
-                return res.read().decode('utf-8')
-        except Exception:
+            with urllib.request.urlopen(req, timeout=2) as res:
+                return res.read().decode('utf-8').strip()
+        except Exception as e:
+            logger.warning("metadata server failed to get SA email: %s", e)
             return None
 
     def _get_blob_name(self, path: Union[str, Path]) -> str:
