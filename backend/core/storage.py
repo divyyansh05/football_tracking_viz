@@ -37,6 +37,10 @@ class BaseStorage:
         """Stream data from a file-like object."""
         raise NotImplementedError
 
+    def generate_signed_url(self, path: Union[str, Path], expiration: int = 3600, method: str = "PUT") -> Optional[str]:
+        """Return a signed URL for direct browser uploads/downloads. None if not supported."""
+        raise NotImplementedError
+
     def delete(self, path: Union[str, Path]):
         raise NotImplementedError
 
@@ -73,6 +77,10 @@ class LocalStorage(BaseStorage):
         import shutil
         with open(p, "wb") as f:
             shutil.copyfileobj(file_obj, f)
+
+    def generate_signed_url(self, path: Union[str, Path], expiration: int = 3600, method: str = "PUT") -> Optional[str]:
+        # LocalStorage doesn't use signed URLs
+        return None
 
     def delete(self, path: Union[str, Path]):
         p = Path(path)
@@ -116,6 +124,17 @@ class GCSStorage(BaseStorage):
         # Use 8MB chunks for faster GCS upload streaming
         blob.chunk_size = 8 * 1024 * 1024 
         blob.upload_from_file(file_obj, content_type="application/octet-stream")
+
+    def generate_signed_url(self, path: Union[str, Path], expiration: int = 3600, method: str = "PUT") -> Optional[str]:
+        import datetime
+        blob = self.bucket.blob(self._get_blob_name(path))
+        url = blob.generate_signed_url(
+            version="v4",
+            expiration=datetime.timedelta(seconds=expiration),
+            method=method,
+            content_type="application/octet-stream"
+        )
+        return url
 
     def delete(self, path: Union[str, Path]):
         blob = self.bucket.blob(self._get_blob_name(path))

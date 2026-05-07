@@ -133,3 +133,53 @@ async def upload_match(
             "(GET /api/match/{match_id}/metadata)."
         ),
     }
+
+@router.get("/signed-url")
+def get_signed_url(match_id: int, file_type: str):
+    """
+    Get a signed URL to upload a file directly to GCS.
+    file_type must be 'match' or 'tracking'
+    """
+    if file_type not in ["match", "tracking"]:
+        raise HTTPException(status_code=400, detail="Invalid file_type")
+        
+    filename = f"{match_id}_{file_type}.jsonl" if file_type == "tracking" else f"{match_id}_match_data.json"
+    path = RAW_DATA_DIR / filename
+    
+    url = storage_provider.generate_signed_url(path, method="PUT")
+    
+    if url is None:
+        return {"url": None, "method": "local", "path": str(path)}
+        
+    return {"url": url, "method": "gcs", "path": str(path)}
+
+@router.post("/complete")
+def upload_complete(match_id: int):
+    """
+    Called by the frontend after successfully uploading files via Signed URLs.
+    This clears the cache to ensure the new data is loaded.
+    """
+    # ── Step 1: Invalidate in-process cache for this match ────────────────────
+    for cache_dict in (
+        match_router._match_data_cache,
+        match_router._tracking_df_cache,
+        match_router._player_lookup_cache,
+    ):
+        cache_dict.pop(match_id, None)
+
+    logger.info("Cache cleared for match_id=%d after signed URL upload", match_id)
+
+    # ── Step 2: Delete existing parquet cache so it reprocesses ───────────────
+    parquet_cache = PROCESSED_DIR / f"{match_id}_tracking.parquet"
+    if storage_provider.exists(parquet_cache):
+        try:
+            if hasattr(storage_provider, 'delete'):
+                storage_provider.delete(parquet_cache)
+            else:
+                if isinstance(storage_provider, match_router.data_loader.LocalStorage):
+                    parquet_cache.unlink()
+            logger.info("Deleted stale parquet cache: %s", parquet_cache)
+        except Exception as exc:
+            logger.warning("Could not delete parquet cache: %s", exc)
+
+    return {"status": "success", "message": f"Cache cleared for match {match_id}"}

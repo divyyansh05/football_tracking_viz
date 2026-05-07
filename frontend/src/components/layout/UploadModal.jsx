@@ -6,6 +6,7 @@ export default function UploadModal({ isOpen, onClose }) {
   const [matchJsonFile, setMatchJsonFile] = useState(null)
   const [trackingJsonlFile, setTrackingJsonlFile] = useState(null)
   const [uploading, setUploading] = useState(false)
+  const [progress, setProgress] = useState(0)
   const [error, setError] = useState(null)
 
   const { loadMatch } = useMatchStore()
@@ -20,18 +21,45 @@ export default function UploadModal({ isOpen, onClose }) {
 
     try {
       setUploading(true)
+      setProgress(0)
       setError(null)
 
-      const result = await api.uploadMatch(matchJsonFile, trackingJsonlFile)
+      // Parse match ID from JSON
+      const text = await matchJsonFile.text()
+      const matchData = JSON.parse(text)
+      const matchId = matchData.id
 
-      // Load the newly uploaded match
-      await loadMatch(result.match_id)
+      if (!matchId) throw new Error("Match JSON missing 'id' field")
 
+      // Attempt to get signed URLs
+      const matchUrlRes = await api.getSignedUrl(matchId, 'match')
+      const trackingUrlRes = await api.getSignedUrl(matchId, 'tracking')
+
+      // If no signed URL (Local Mode), fallback to traditional backend upload
+      if (!matchUrlRes.url) {
+        setProgress(50) // Indeterminate progress for backend upload
+        const result = await api.uploadMatch(matchJsonFile, trackingJsonlFile)
+        await loadMatch(result.match_id)
+        onClose()
+        return
+      }
+
+      // Cloud Mode: Direct GCS Upload
+      await api.uploadToSignedUrl(matchUrlRes.url, matchJsonFile, (p) => setProgress(p * 0.1))
+      await api.uploadToSignedUrl(trackingUrlRes.url, trackingJsonlFile, (p) => setProgress(10 + p * 0.9))
+      
+      setProgress(100)
+      
+      // Notify backend to clear cache
+      await api.completeUpload(matchId)
+      
+      await loadMatch(matchId)
       onClose()
     } catch (err) {
       setError(err.message)
     } finally {
       setUploading(false)
+      setProgress(0)
     }
   }
 
@@ -59,6 +87,17 @@ export default function UploadModal({ isOpen, onClose }) {
             />
           </label>
         </div>
+
+        {uploading && progress > 0 && (
+          <div style={{ marginTop: '1rem' }}>
+            <div style={{ width: '100%', backgroundColor: '#eee', borderRadius: '4px', height: '10px', overflow: 'hidden' }}>
+              <div style={{ width: `${progress}%`, backgroundColor: '#4CAF50', height: '100%', transition: 'width 0.2s' }} />
+            </div>
+            <div style={{ fontSize: '0.8rem', textAlign: 'center', marginTop: '4px' }}>
+              {Math.round(progress)}%
+            </div>
+          </div>
+        )}
 
         {error && <div className="error-message">{error}</div>}
 

@@ -42,6 +42,37 @@ export const api = {
       .then(handleResponse)
   },
 
+  getSignedUrl: (matchId, fileType) =>
+    fetch(`${BASE}/upload/signed-url?match_id=${matchId}&file_type=${fileType}`).then(handleResponse),
+
+  uploadToSignedUrl: (url, file, onProgress) => {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest()
+      xhr.open('PUT', url, true)
+      xhr.setRequestHeader('Content-Type', 'application/octet-stream')
+
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && onProgress) {
+          onProgress((e.loaded / e.total) * 100)
+        }
+      }
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve()
+        } else {
+          reject(new Error(`HTTP ${xhr.status}: ${xhr.responseText}`))
+        }
+      }
+
+      xhr.onerror = () => reject(new Error('Network error during upload to GCS'))
+      xhr.send(file)
+    })
+  },
+
+  completeUpload: (matchId) =>
+    fetch(`${BASE}/upload/complete?match_id=${matchId}`, { method: 'POST' }).then(handleResponse),
+
   getPlayerHeatmap: (matchId, playerId, period = 0) =>
     fetch(`${BASE}/analytics/${matchId}/heatmap/${playerId}?period=${period}`).then(handleResponse),
 
