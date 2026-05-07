@@ -157,6 +157,8 @@ def load_tracking_data(
 
     # Stream from storage_provider (read entire file into memory as we're in serverless context)
     content = storage_provider.read_text(jsonl_path)
+    rows = []
+    
     for line in content.splitlines():
         line = line.strip()
         if not line:
@@ -167,51 +169,52 @@ def load_tracking_data(
         except json.JSONDecodeError:
             continue
 
-            frame: int = obj.get("frame", 0)
-            if frame < 20:
-                continue
+        frame: int = obj.get("frame", 0)
+        if frame < 20:
+            continue
 
-            player_data = obj.get("player_data")
-            if not player_data:
-                continue
+        player_data = obj.get("player_data")
+        if not player_data:
+            continue
 
-            timestamp_str: str = obj.get("timestamp", "")
-            period = obj.get("period")  # may be None
+        timestamp_str: str = obj.get("timestamp", "")
+        period = obj.get("period")  # may be None
 
-            # ── Player rows ──────────────────────────────────────────────────
-            for pd_entry in player_data:
-                rows.append(
-                    {
-                        "frame": frame,
-                        "timestamp_str": timestamp_str,
-                        "period": period,
-                        "player_id": int(pd_entry["player_id"]),
-                        "x_raw": float(pd_entry["x"]),
-                        "y_raw": float(pd_entry["y"]),
-                        "x_m": float(pd_entry["x"]) + x_offset,
-                        "y_m": float(pd_entry["y"]) + y_offset,
-                        "is_detected": bool(pd_entry.get("is_detected", True)),
-                    }
-                )
 
-            # ── Ball row (player_id = -1) ─────────────────────────────────
-            ball = obj.get("ball_data") or {}
-            bx = ball.get("x")
-            by = ball.get("y")
-            if bx is not None and by is not None:
-                rows.append(
-                    {
-                        "frame": frame,
-                        "timestamp_str": timestamp_str,
-                        "period": period,
-                        "player_id": -1,
-                        "x_raw": float(bx),
-                        "y_raw": float(by),
-                        "x_m": float(bx) + x_offset,
-                        "y_m": float(by) + y_offset,
-                        "is_detected": bool(ball.get("is_detected", True)),
-                    }
-                )
+        # ── Player rows ──────────────────────────────────────────────────
+        for pd_entry in player_data:
+            rows.append(
+                {
+                    "frame": frame,
+                    "timestamp_str": timestamp_str,
+                    "period": period,
+                    "player_id": int(pd_entry["player_id"]),
+                    "x_raw": float(pd_entry["x"]),
+                    "y_raw": float(pd_entry["y"]),
+                    "x_m": float(pd_entry["x"]) + x_offset,
+                    "y_m": float(pd_entry["y"]) + y_offset,
+                    "is_detected": bool(pd_entry.get("is_detected", True)),
+                }
+            )
+
+        # ── Ball row (player_id = -1) ─────────────────────────────────
+        ball = obj.get("ball_data") or {}
+        bx = ball.get("x")
+        by = ball.get("y")
+        if bx is not None and by is not None:
+            rows.append(
+                {
+                    "frame": frame,
+                    "timestamp_str": timestamp_str,
+                    "period": period,
+                    "player_id": -1,
+                    "x_raw": float(bx),
+                    "y_raw": float(by),
+                    "x_m": float(bx) + x_offset,
+                    "y_m": float(by) + y_offset,
+                    "is_detected": bool(ball.get("is_detected", True)),
+                }
+            )
 
     logger.info("Streaming complete — building DataFrame from %d rows", len(rows))
 
