@@ -22,6 +22,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from core import data_loader, physics, pitch_control as pc, voronoi_engine
 from core.data_loader import resolve_tracking_path
+from core.storage import storage_provider
 from models import (
     AvailableFramesResponse,
     BallData,
@@ -68,16 +69,19 @@ def list_matches() -> MatchListResponse:
     try:
         matches = []
 
-        if not RAW_DATA_DIR.exists():
+        if not storage_provider.exists(RAW_DATA_DIR):
             return MatchListResponse(matches=[])
 
-        for json_file in RAW_DATA_DIR.glob("*_match_data.json"):
+        match_files = storage_provider.list_files(RAW_DATA_DIR, "*_match_data.json")
+        for json_file in match_files:
             try:
-                match_id = int(json_file.stem.replace("_match_data", ""))
+                # json_file is a Path object from storage_provider
+                match_id_str = json_file.stem.replace("_match_data", "")
+                match_id = int(match_id_str)
 
                 # Load metadata
-                with open(json_file, "r", encoding="utf-8") as fh:
-                    match_data = json.load(fh)
+                content = storage_provider.read_text(json_file)
+                match_data = json.loads(content)
 
                 home_team = match_data.get("home_team", {}).get("name", "Unknown")
                 away_team = match_data.get("away_team", {}).get("name", "Unknown")
@@ -88,7 +92,7 @@ def list_matches() -> MatchListResponse:
 
                 # Check if tracking file exists
                 tracking_path = resolve_tracking_path(RAW_DATA_DIR, match_id)
-                has_tracking = tracking_path.exists()
+                has_tracking = storage_provider.exists(tracking_path)
 
                 matches.append({
                     "match_id": match_id,

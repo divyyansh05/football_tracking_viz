@@ -10,10 +10,13 @@ Handles:
 
 import json
 import logging
+import io
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+from core.storage import storage_provider
 
 logger = logging.getLogger(__name__)
 
@@ -32,13 +35,14 @@ def load_match_metadata(json_path: Path) -> dict:
     Raises:
         FileNotFoundError: if the file does not exist at json_path.
     """
-    if not json_path.exists():
+    if not storage_provider.exists(json_path):
         raise FileNotFoundError(
             f"Match metadata file not found: {json_path}. "
             "Please upload match_data.json via POST /api/upload/match."
         )
-    with open(json_path, "r", encoding="utf-8") as fh:
-        data = json.load(fh)
+    
+    content = storage_provider.read_text(json_path)
+    data = json.loads(content)
 
     # Extract pitch dimensions (use defaults if not present)
     pitch_length = data.get('pitch_length', 105.0)
@@ -101,10 +105,10 @@ def build_player_lookup(match_data: dict) -> dict:
 def resolve_tracking_path(raw_dir: Path, match_id: int) -> Path:
     """Return the tracking JSONL path, trying canonical name then _extrapolated fallback."""
     canonical = raw_dir / f"{match_id}_tracking.jsonl"
-    if canonical.exists():
+    if storage_provider.exists(canonical):
         return canonical
     extrapolated = raw_dir / f"{match_id}_tracking_extrapolated.jsonl"
-    if extrapolated.exists():
+    if storage_provider.exists(extrapolated):
         logger.info("Using extrapolated tracking file: %s", extrapolated)
         return extrapolated
     # Return canonical path so FileNotFoundError message is clear
@@ -130,11 +134,13 @@ def load_tracking_data(
     """
     cache_path = processed_dir / f"{match_id}_tracking.parquet"
 
-    if cache_path.exists():
-        logger.info("Loaded tracking data from parquet cache: %s", cache_path)
-        return pd.read_parquet(cache_path, engine="pyarrow")
+    if storage_provider.exists(cache_path):
+        logger.info("Loaded tracking data from cache: %s", cache_path)
+        # For parquet, we need bytes. storage_provider returns bytes for read_bytes.
+        parquet_bytes = storage_provider.read_bytes(cache_path)
+        return pd.read_parquet(io.BytesIO(parquet_bytes), engine="pyarrow")
 
-    if not jsonl_path.exists():
+    if not storage_provider.exists(jsonl_path):
         raise FileNotFoundError(
             f"Tracking JSONL not found: {jsonl_path}. "
             "Please upload tracking.jsonl via POST /api/upload/match."
@@ -149,20 +155,17 @@ def load_tracking_data(
         x_offset = X_OFFSET
         y_offset = Y_OFFSET
 
-    logger.info("Streaming tracking JSONL from %s — this may take a moment...", jsonl_path)
+    # Stream from storage_provider (read entire file into memory as we're in serverless context)
+    content = storage_provider.read_text(jsonl_path)
+    for line in content.splitlines():
+        line = line.strip()
+        if not line:
+            continue
 
-    rows: list[dict] = []
-
-    with open(jsonl_path, "r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
 
             frame: int = obj.get("frame", 0)
             if frame < 20:
@@ -229,8 +232,19 @@ def load_tracking_data(
     df["is_detected"] = df["is_detected"].astype(bool)
 
     # ── Save parquet cache ───────────────────────────────────────────────────
-    processed_dir.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(cache_path, engine="pyarrow", index=False)
+    # LocalStorage handles mkdir. GCSStorage doesn't need it.
+    # To save to parquet and then to GCS, we use an in-memory buffer
+    buffer = io.BytesIO()
+    df.to_parquet(buffer, engine="pyarrow", index=False)
+    
+    # We need a write_bytes method in storage_provider for this
+    if hasattr(storage_provider, 'write_bytes'):
+        storage_provider.write_bytes(cache_path, buffer.getvalue())
+    else:
+        # Fallback if I haven't added write_bytes yet (let's add it to storage.py next)
+        with open(cache_path, "wb") as f:
+            f.write(buffer.getvalue())
+            
     logger.info("Saved parquet cache to %s", cache_path)
 
     return df

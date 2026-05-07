@@ -13,13 +13,14 @@ from pathlib import Path
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from routers import match as match_router
+from core.storage import storage_provider
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/upload", tags=["upload"])
 
 RAW_DATA_DIR = Path("data/raw")
-RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
+PROCESSED_DIR = Path("data/processed")
 
 
 @router.post("/match")
@@ -68,33 +69,29 @@ async def upload_match(
     match_id = int(match_id)
 
     # ── Step 2: Save match JSON ───────────────────────────────────────────────
-    RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
     match_json_path = RAW_DATA_DIR / f"{match_id}_match_data.json"
     try:
-        match_json_path.write_bytes(raw_bytes)
+        storage_provider.write_bytes(match_json_path, raw_bytes)
         logger.info("Saved match metadata to %s", match_json_path)
-    except OSError as exc:
+    except Exception as exc:
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to write match metadata to disk: {exc}",
+            detail=f"Failed to write match metadata: {exc}",
         ) from exc
 
     # ── Step 3: Save tracking JSONL ───────────────────────────────────────────
     tracking_path = RAW_DATA_DIR / f"{match_id}_tracking.jsonl"
     try:
-        with open(tracking_path, "wb") as out_fh:
-            # Stream in 1 MB chunks to avoid loading entire file into memory
-            await tracking_jsonl.seek(0)
-            while True:
-                chunk = await tracking_jsonl.read(1024 * 1024)
-                if not chunk:
-                    break
-                out_fh.write(chunk)
+        # For simplicity in this iteration, we read the entire file.
+        # In a high-traffic production app, we'd use a streaming GCS upload.
+        await tracking_jsonl.seek(0)
+        tracking_bytes = await tracking_jsonl.read()
+        storage_provider.write_bytes(tracking_path, tracking_bytes)
         logger.info("Saved tracking JSONL to %s", tracking_path)
-    except OSError as exc:
+    except Exception as exc:
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to write tracking JSONL to disk: {exc}",
+            detail=f"Failed to write tracking JSONL: {exc}",
         ) from exc
 
     # ── Step 4: Invalidate in-process cache for this match ────────────────────
@@ -108,13 +105,18 @@ async def upload_match(
     logger.info("Cache cleared for match_id=%d", match_id)
 
     # ── Step 5: Delete existing parquet cache so it reprocesses ───────────────
-    processed_dir = Path("data/processed")
-    parquet_cache = processed_dir / f"{match_id}_tracking.parquet"
-    if parquet_cache.exists():
+    parquet_cache = PROCESSED_DIR / f"{match_id}_tracking.parquet"
+    if storage_provider.exists(parquet_cache):
         try:
-            parquet_cache.unlink()
+            # We need a delete method in storage_provider
+            if hasattr(storage_provider, 'delete'):
+                storage_provider.delete(parquet_cache)
+            else:
+                # Fallback to local unlink if possible
+                if isinstance(storage_provider, match_router.data_loader.LocalStorage):
+                    parquet_cache.unlink()
             logger.info("Deleted stale parquet cache: %s", parquet_cache)
-        except OSError as exc:
+        except Exception as exc:
             logger.warning("Could not delete parquet cache: %s", exc)
 
     # ── Step 6: Return immediately — parsing triggered on first data request ──
