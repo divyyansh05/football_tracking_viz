@@ -95,40 +95,20 @@ class LocalStorage(BaseStorage):
 
 class GCSStorage(BaseStorage):
     def __init__(self, bucket_name: str):
-        self.client = storage.Client()
+        import google.auth
+        import os
+        
+        # Explicitly request cloud-platform scope to allow the IAM Credentials API to sign URLs
+        credentials, project = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        
+        self.client = storage.Client(credentials=credentials, project=project)
         self.bucket_name = bucket_name
         self.bucket = self.client.bucket(bucket_name)
-        self.service_account_email = self._get_service_account_email()
-
-    def _get_service_account_email(self):
-        """Fetch the default service account email for IAM remote signing."""
-        import os
-        # 1. Check Env Var
-        sa = os.getenv("GCP_SERVICE_ACCOUNT")
-        if sa:
-            return sa
-            
-        # 2. Check google.auth
-        import google.auth
-        try:
-            credentials, _ = google.auth.default()
-            if hasattr(credentials, 'service_account_email') and credentials.service_account_email:
-                return credentials.service_account_email
-        except Exception as e:
-            logger.warning("google.auth failed to get SA email: %s", e)
-
-        # 3. Fallback to metadata server
-        import urllib.request
-        try:
-            req = urllib.request.Request(
-                "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email",
-                headers={"Metadata-Flavor": "Google"}
-            )
-            with urllib.request.urlopen(req, timeout=2) as res:
-                return res.read().decode('utf-8').strip()
-        except Exception as e:
-            logger.warning("metadata server failed to get SA email: %s", e)
-            return None
+        
+        # Get the service account email
+        self.service_account_email = os.getenv("GCP_SERVICE_ACCOUNT")
+        if not self.service_account_email and hasattr(credentials, 'service_account_email'):
+            self.service_account_email = credentials.service_account_email
 
     def _get_blob_name(self, path: Union[str, Path]) -> str:
         # Convert path like 'data/raw/1_match.json' to 'data/raw/1_match.json' string
