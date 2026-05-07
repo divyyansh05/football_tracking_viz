@@ -158,6 +158,8 @@ class GCSStorage(BaseStorage):
 
     def generate_signed_url(self, path: Union[str, Path], expiration: int = 3600, method: str = "PUT") -> Optional[str]:
         import datetime
+        import google.auth.transport.requests
+
         blob = self.bucket.blob(self._get_blob_name(path))
         
         kwargs = {
@@ -170,6 +172,12 @@ class GCSStorage(BaseStorage):
         # If running on Cloud Run, use the service account email for remote IAM signing
         if self.service_account_email:
             kwargs["service_account_email"] = self.service_account_email
+            
+            # CRITICAL: google-cloud-storage requires the access_token to be explicitly passed 
+            # when using a service_account_email with Compute Engine / Cloud Run default credentials
+            request = google.auth.transport.requests.Request()
+            self.client._credentials.refresh(request)
+            kwargs["access_token"] = self.client._credentials.token
             
         url = blob.generate_signed_url(**kwargs)
         return url
