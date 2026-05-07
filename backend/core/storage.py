@@ -97,6 +97,7 @@ class GCSStorage(BaseStorage):
     def __init__(self, bucket_name: str):
         import google.auth
         import os
+        import urllib.request
         
         # Explicitly request cloud-platform scope to allow the IAM Credentials API to sign URLs
         credentials, project = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
@@ -105,10 +106,25 @@ class GCSStorage(BaseStorage):
         self.bucket_name = bucket_name
         self.bucket = self.client.bucket(bucket_name)
         
-        # Get the service account email
+        # Get the real service account email. 
+        # (credentials.service_account_email returns "default" on Cloud Run which the IAM API rejects)
         self.service_account_email = os.getenv("GCP_SERVICE_ACCOUNT")
+        
+        if not self.service_account_email:
+            try:
+                req = urllib.request.Request(
+                    "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email",
+                    headers={"Metadata-Flavor": "Google"}
+                )
+                with urllib.request.urlopen(req, timeout=2) as res:
+                    self.service_account_email = res.read().decode('utf-8').strip()
+            except Exception as e:
+                logger.warning(f"Metadata server failed to get SA email: {e}")
+                
         if not self.service_account_email and hasattr(credentials, 'service_account_email'):
-            self.service_account_email = credentials.service_account_email
+            sa = credentials.service_account_email
+            if sa != "default":
+                self.service_account_email = sa
 
     def _get_blob_name(self, path: Union[str, Path]) -> str:
         # Convert path like 'data/raw/1_match.json' to 'data/raw/1_match.json' string
