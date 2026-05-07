@@ -62,8 +62,8 @@ jobs:
           env_vars: |
             STORAGE_MODE=gcs
             GCS_BUCKET_NAME=${{ env.GCS_BUCKET_NAME }}
-          # Ensures the service is publicly accessible over the internet
-          flags: '--allow-unauthenticated'
+          # Ensures the service is publicly accessible and has enough memory to process 50MB+ tracking JSONL files
+          flags: '--allow-unauthenticated --memory=2Gi'
 
       - name: Show Deployed URL
         run: echo "App successfully deployed at ${{ steps.deploy.outputs.url }}"
