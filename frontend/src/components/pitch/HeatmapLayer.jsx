@@ -1,12 +1,12 @@
 import React from 'react'
 
-export default function HeatmapLayer({ heatmapData, teamColor }) {
+export default function HeatmapLayer({ heatmapData, teamColor, pitchLength = 105, pitchWidth = 68 }) {
   if (!heatmapData || !heatmapData.heatmap) return null
 
   const { heatmap, x_grid, y_grid } = heatmapData
 
-  const cellWidth = 105 / Math.max(1, x_grid.length - 1)
-  const cellHeight = 68 / Math.max(1, y_grid.length - 1)
+  const cellWidth = pitchLength / Math.max(1, x_grid.length - 1)
+  const cellHeight = pitchWidth / Math.max(1, y_grid.length - 1)
 
   const cells = []
 

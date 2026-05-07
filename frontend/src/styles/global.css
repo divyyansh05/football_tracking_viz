@@ -822,4 +822,115 @@ body {
   color: white;
   border-bottom: 2px solid #7b8cde;
 }
+
+/* ========== PlayerSelector Component ========== */
+.player-selector {
+  margin-bottom: 16px;
 }
+
+.team-tabs {
+  display: flex;
+  border-bottom: 1px solid #2a2d3e;
+  margin-bottom: 12px;
+}
+
+.team-tab {
+  padding: 8px 20px;
+  background: none;
+  border: none;
+  color: #888;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  font-size: 0.9rem;
+  transition: all 0.2s;
+}
+
+.team-tab.active {
+  color: white;
+}
+
+.team-tab:hover {
+  color: #ccc;
+}
+
+.player-selector .player-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px;
+}
+
+.player-selector .player-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px 6px;
+  background: #1e2235;
+  border: 1px solid #2a2d3e;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+  text-align: center;
+}
+
+.player-selector .player-chip:hover {
+  background: #252840;
+  border-color: #3a3d5e;
+}
+
+.player-selector .player-chip.selected {
+  background: #1a2040;
+}
+
+.player-selector .player-number {
+  font-size: 0.7rem;
+  color: #888;
+}
+
+.player-selector .player-name {
+  font-size: 0.85rem;
+  color: white;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 110px;
+}
+
+.player-selector .player-position {
+  font-size: 0.7rem;
+  color: #666;
+}
+
+@media (max-width: 768px) {
+  .player-selector .player-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+}
+
+/* ========== Formation Badge (FIX 14) ========== */
+.formation-badge {
+  background: #1e2235;
+  border: 1px solid #3a3d5e;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 1.05rem;
+  font-weight: bold;
+  color: white;
+  margin-left: 4px;
+  letter-spacing: 0.05em;
+}
+
+/* ========== Substitute Badge (FIX 15f) ========== */
+.sub-badge {
+  font-size: 0.65rem;
+  background: #f59e0b;
+  color: #000;
+  border-radius: 3px;
+  padding: 1px 4px;
+  margin-left: 4px;
+  vertical-align: middle;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+

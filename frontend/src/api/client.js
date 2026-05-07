@@ -60,8 +60,13 @@ export const api = {
   getFormation: (matchId, windowMinutes = 5, period = 0) =>
     fetch(`${BASE}/analytics/${matchId}/formation?window_minutes=${windowMinutes}&period=${period}`).then(handleResponse),
 
-  getPressingMap: (matchId, team = 'home', period = 0, distanceThreshold = 5.0) =>
-    fetch(`${BASE}/analytics/${matchId}/pressing?team=${team}&period=${period}&distance_threshold=${distanceThreshold}`).then(handleResponse),
+  getPressingMap: (matchId, team = 'home', period = 0, distanceThreshold = 5.0, startMinute = null, endMinute = null) => {
+    let url = `${BASE}/analytics/${matchId}/pressing?team=${team}&period=${period}&distance_threshold=${distanceThreshold}`
+    if (startMinute !== null && endMinute !== null) {
+      url += `&start_minute=${startMinute}&end_minute=${endMinute}`
+    }
+    return fetch(url).then(handleResponse)
+  },
 
   getCentroid: (matchId, sampleEvery = 10, smoothWindow = 50) =>
     fetch(`${BASE}/analytics/${matchId}/centroid?sample_every=${sampleEvery}&smooth_window=${smoothWindow}`).then(handleResponse),
@@ -77,4 +82,7 @@ export const api = {
 
   getPhysicalSummary: (matchId) =>
     fetch(`${BASE}/analytics/${matchId}/physical-summary`).then(handleResponse),
+
+  getMatchStatus: (matchId) =>
+    fetch(`${BASE}/match/${matchId}/status`).then(handleResponse),
 }

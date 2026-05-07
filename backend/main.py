@@ -12,6 +12,8 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 from routers import match, upload, analytics
 
@@ -57,21 +59,47 @@ app.add_middleware(
 )
 
 # ─── Routers ──────────────────────────────────────────────────────────────────
+# Note: Router prefixes (e.g., /api/match) are defined within the router files
 app.include_router(match.router)
 app.include_router(upload.router)
 app.include_router(analytics.router)
 
 
-# ─── Root & health ────────────────────────────────────────────────────────────
-@app.get("/")
-def root() -> dict:
-    return {
-        "status": "ok",
-        "message": "Football Tracking API running",
-        "docs": "/docs",
-    }
-
-
-@app.get("/health")
+# ─── API Health Check ─────────────────────────────────────────────────────────
+# This stays as a fallback for testing
+@app.get("/api/health")
 def health() -> dict:
     return {"status": "healthy"}
+
+
+# ─── Static Files (Frontend) ──────────────────────────────────────────────────
+# In production (Docker), the frontend build is copied to /app/static
+static_path = Path("static")
+if static_path.exists():
+    # Mount assets (CSS/JS)
+    if (static_path / "assets").exists():
+        app.mount("/assets", StaticFiles(directory=static_path / "assets"), name="assets")
+
+    # Catch-all for React client-side routing
+    @app.get("/{full_path:path}")
+    async def serve_frontend(full_path: str):
+        # 1. Check if the path is a file (e.g. logo.png, robots.txt)
+        file_path = static_path / full_path
+        if file_path.exists() and file_path.is_file():
+            return FileResponse(file_path)
+        
+        # 2. Otherwise serve index.html (React handles routing)
+        index_file = static_path / "index.html"
+        if index_file.exists():
+            return FileResponse(index_file)
+        
+        return {"error": "Frontend not found"}
+else:
+    # Local development fallbacks
+    @app.get("/")
+    def root() -> dict:
+        return {
+            "status": "ok",
+            "message": "Football Tracking API running",
+            "docs": "/api/docs",
+        }

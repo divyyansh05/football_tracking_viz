@@ -4,21 +4,35 @@ import { api } from '../../api/client'
 import PitchSVG from '../../components/pitch/PitchSVG'
 import HeatmapLayer from '../../components/pitch/HeatmapLayer'
 import Spinner from '../../components/ui/Spinner'
+import PlayerSelector from '../../components/ui/PlayerSelector'
 
 export default function PlayerHeatmap() {
   const { matchId, metadata } = useMatchStore()
-  const [selectedPlayer, setSelectedPlayer] = useState(null)
+  const [selectedPlayerId, setSelectedPlayerId] = useState(null)
   const [period, setPeriod] = useState(0) // 0=full, 1=p1, 2=p2
   const [heatmapData, setHeatmapData] = useState(null)
   const [loading, setLoading] = useState(false)
   
+  // Default player selection on mount
   useEffect(() => {
-    if (!matchId || !selectedPlayer) return
-    
+    if (!metadata || selectedPlayerId !== null) return
+
+    // Find first outfield player from home team
+    const homePlayers = metadata.players.filter(p => p.team === 'home')
+    const defaultPlayer = homePlayers.find(p => p.position !== 'GK') || homePlayers[0]
+
+    if (defaultPlayer) {
+      setSelectedPlayerId(defaultPlayer.player_id)
+    }
+  }, [metadata, selectedPlayerId])
+
+  useEffect(() => {
+    if (!matchId || !selectedPlayerId) return
+
     const fetchHeatmap = async () => {
       setLoading(true)
       try {
-        const data = await api.getPlayerHeatmap(matchId, selectedPlayer.id, period)
+        const data = await api.getPlayerHeatmap(matchId, selectedPlayerId, period)
         setHeatmapData(data)
       } catch (err) {
         console.error("Failed to fetch heatmap", err)
@@ -27,55 +41,29 @@ export default function PlayerHeatmap() {
         setLoading(false)
       }
     }
-    
+
     fetchHeatmap()
-  }, [matchId, selectedPlayer, period])
+  }, [matchId, selectedPlayerId, period])
 
   if (!metadata) return <div className="loading">Loading metadata...</div>
 
-  const homePlayers = metadata.players.filter(p => p.team_id === metadata.home_team.id)
-  const awayPlayers = metadata.players.filter(p => p.team_id === metadata.away_team.id)
-
-  const renderPlayerGrid = (players, teamColor) => (
-    <div className="player-grid">
-      {players.map(p => {
-        const isSelected = selectedPlayer?.id === p.id
-        return (
-          <button
-            key={p.id}
-            className={`player-chip ${isSelected ? 'selected' : ''}`}
-            style={{ 
-              backgroundColor: isSelected ? teamColor : '#2a2d3e',
-              border: `1px solid ${isSelected ? teamColor : '#333'}`,
-              color: isSelected ? '#fff' : '#ccc'
-            }}
-            onClick={() => setSelectedPlayer(p)}
-          >
-            <span className="player-num">#{p.number}</span>
-            <span className="player-name">{p.name} {p.last_name}</span>
-            <span className="player-pos">{p.position}</span>
-          </button>
-        )
-      })}
-    </div>
-  )
-
-  const selectedTeamColor = selectedPlayer?.team_id === metadata.home_team.id 
-    ? metadata.home_team.jersey_color 
+  const selectedPlayer = metadata.players.find(p => p.player_id === selectedPlayerId)
+  const selectedTeamColor = selectedPlayer?.team === 'home'
+    ? metadata.home_team.jersey_color
     : metadata.away_team.jersey_color
 
   return (
     <div className="player-heatmap-tab">
-      <div className="player-selector-section">
-        <div className="team-column">
-          <h3 style={{ color: metadata.home_team.jersey_color }}>{metadata.home_team.name}</h3>
-          {renderPlayerGrid(homePlayers, metadata.home_team.jersey_color)}
-        </div>
-        <div className="team-column">
-          <h3 style={{ color: metadata.away_team.jersey_color }}>{metadata.away_team.name}</h3>
-          {renderPlayerGrid(awayPlayers, metadata.away_team.jersey_color)}
-        </div>
-      </div>
+      <PlayerSelector
+        players={metadata.players}
+        selectedPlayerId={selectedPlayerId}
+        onSelect={setSelectedPlayerId}
+        defaultTeam="home"
+        homeTeamName={metadata.home_team.short_name}
+        awayTeamName={metadata.away_team.short_name}
+        homeTeamColor={metadata.home_team.jersey_color}
+        awayTeamColor={metadata.away_team.jersey_color}
+      />
 
       <div className="period-filter" style={{ display: 'flex', gap: '8px', justifyContent: 'center', margin: '24px 0' }}>
         {[
@@ -100,12 +88,7 @@ export default function PlayerHeatmap() {
         ))}
       </div>
 
-      {!selectedPlayer ? (
-        <div className="prompt-message" style={{ textAlign: 'center', padding: '48px', color: '#999', background: '#1a1d2e', borderRadius: '12px' }}>
-          <p>Select a player above to view their heatmap</p>
-        </div>
-      ) : (
-        <div className="heatmap-display">
+      <div className="heatmap-display">
           <div className="pitch-container" style={{ position: 'relative' }}>
             {loading && (
               <div className="pitch-loading-overlay">
@@ -147,8 +130,7 @@ export default function PlayerHeatmap() {
               </div>
             </div>
           )}
-        </div>
-      )}
+      </div>
     </div>
   )
 }

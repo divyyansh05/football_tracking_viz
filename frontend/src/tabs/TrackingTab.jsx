@@ -1,8 +1,10 @@
 import { useMatchStore } from '../store/matchStore'
 import PitchSVG from '../components/pitch/PitchSVG'
+import PitchOrientation from '../components/pitch/PitchOrientation'
 import PlayerDot from '../components/pitch/PlayerDot'
 import FrameControls from '../components/controls/FrameControls'
 import LabelToggle from '../components/controls/LabelToggle'
+import { fmt } from '../utils/format'
 
 function StatsTable({ players, metadata }) {
   if (!players || !metadata) return null
@@ -33,8 +35,8 @@ function StatsTable({ players, metadata }) {
             <td>{idx + 1}</td>
             <td>{player.name} {player.last_name}</td>
             <td>{player.team === 'home' ? metadata.home_team.short_name : metadata.away_team.short_name}</td>
-            <td>{(player.speed * 3.6).toFixed(1)}</td>
-            <td>{player.accel.toFixed(2)}</td>
+            <td>{fmt.speed(player.speed * 3.6)}</td>
+            <td>{fmt.accel(player.accel)}</td>
           </tr>
         ))}
       </tbody>
@@ -43,18 +45,22 @@ function StatsTable({ players, metadata }) {
 }
 
 export default function TrackingTab() {
-  const { frameData, metadata, labelMode } = useMatchStore()
+  const { frameData, metadata, labelMode, pitchDimensions } = useMatchStore()
 
   if (!frameData || !metadata) {
     return <div className="tracking-tab">Loading...</div>
   }
 
   const exportFrameCSV = () => {
+    if (!frameData || !frameData.players || !Array.isArray(frameData.players)) {
+      console.error('Cannot export: frameData.players is missing or invalid')
+      return
+    }
     const rows = [['Name', 'Team', 'X_m', 'Y_m', 'Speed_kmh', 'Accel']]
     frameData.players.forEach(p => {
-      if (p.player_id !== -1) {
+      if (p && p.player_id !== -1 && p.x_m != null && p.y_m != null) {
         const teamName = p.team === 'home' ? metadata.home_team.short_name : metadata.away_team.short_name
-        rows.push([`${p.name} ${p.last_name}`, teamName, p.x_m.toFixed(2), p.y_m.toFixed(2), (p.speed * 3.6).toFixed(2), (p.accel || 0).toFixed(2)])
+        rows.push([`${p.name || ''} ${p.last_name || ''}`, teamName, p.x_m.toFixed(2), p.y_m.toFixed(2), ((p.speed || 0) * 3.6).toFixed(2), (p.accel || 0).toFixed(2)])
       }
     })
     const csvString = rows.map(r => r.join(',')).join('\n')
@@ -81,9 +87,17 @@ export default function TrackingTab() {
               <LabelToggle />
             </div>
 
-            <PitchSVG>
-              {frameData.players
-                .filter(p => p.player_id !== -1)
+            <PitchSVG pitchLength={pitchDimensions.length} pitchWidth={pitchDimensions.width}>
+              <PitchOrientation
+                homeTeamName={metadata?.home_team?.short_name}
+                awayTeamName={metadata?.away_team?.short_name}
+                homeColor={metadata?.home_team?.jersey_color}
+                awayColor={metadata?.away_team?.jersey_color}
+                pitchLength={pitchDimensions.length}
+                pitchWidth={pitchDimensions.width}
+              />
+              {frameData.players && Array.isArray(frameData.players) && frameData.players
+                .filter(p => p && p.player_id !== -1)
                 .map(p => (
                   <PlayerDot
                     key={p.player_id}
@@ -91,10 +105,12 @@ export default function TrackingTab() {
                     labelMode={labelMode}
                     homeColor={metadata.home_team.jersey_color}
                     awayColor={metadata.away_team.jersey_color}
+                    pitchLength={pitchDimensions.length}
+                    pitchWidth={pitchDimensions.width}
                   />
                 ))}
 
-              {frameData.ball && (
+              {frameData.ball && frameData.ball.x_m != null && frameData.ball.y_m != null && (
                 <circle
                   cx={frameData.ball.x_m}
                   cy={frameData.ball.y_m}

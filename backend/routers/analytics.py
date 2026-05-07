@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, Query
+from typing import Optional
 import pandas as pd
 import numpy as np
 from scipy.stats import gaussian_kde
@@ -364,32 +365,35 @@ def get_convex_hull(match_id: int, frame_number: int):
         def compute_hull(positions):
             if len(positions) < 3:
                 return {
-                    "hull_polygon": [], 
-                    "area_m2": 0.0, 
-                    "centroid": {"x": 0.0, "y": 0.0}, 
-                    "team_length": 0.0, 
-                    "team_width": 0.0, 
-                    "player_count": len(positions)
+                    "hull_polygon": [],
+                    "area_m2": 0.0,
+                    "centroid": {"x": 0.0, "y": 0.0},
+                    "team_length": 0.0,
+                    "team_width": 0.0,
+                    "player_count": len(positions),
+                    "error": f"Insufficient players ({len(positions)}) for hull"
                 }
-            
+
             pos_arr = np.array(positions)
-            
+
             try:
                 hull = scipy.spatial.ConvexHull(pos_arr)
                 hull_vertices = [positions[i] for i in hull.vertices]
                 hull_vertices.append(hull_vertices[0])
                 area = float(hull.volume)
-            except Exception:
+                error = None
+            except Exception as e:
                 hull_vertices = []
                 area = 0.0
-                
+                error = f"Hull computation failed: {str(e)}"
+
             centroid_x = float(np.mean(pos_arr[:, 0]))
             centroid_y = float(np.mean(pos_arr[:, 1]))
-            
+
             t_length = float(np.max(pos_arr[:, 0]) - np.min(pos_arr[:, 0]))
             t_width = float(np.max(pos_arr[:, 1]) - np.min(pos_arr[:, 1]))
-            
-            return {
+
+            result = {
                 "hull_polygon": [[float(x), float(y)] for x, y in hull_vertices],
                 "area_m2": round(area, 1),
                 "centroid": {"x": round(centroid_x, 2), "y": round(centroid_y, 2)},
@@ -397,6 +401,11 @@ def get_convex_hull(match_id: int, frame_number: int):
                 "team_width": round(t_width, 1),
                 "player_count": len(positions)
             }
+
+            if error:
+                result["error"] = error
+
+            return result
             
         home_data = compute_hull(home_players)
         away_data = compute_hull(away_players)
@@ -585,13 +594,42 @@ def get_formation(match_id: int, window_minutes: int = Query(5), period: int = Q
                     away_players.append(p_data)
                     
             if home_players or away_players:
+                # --- Formation detection ---
+                def detect_formation_from_players(outfield_list, is_home):
+                    if len(outfield_list) < 6:
+                        return "N/A"
+                    # Sort by avg_x; remove likely GK
+                    sorted_p = sorted(outfield_list, key=lambda p: p["avg_x"])
+                    if is_home:
+                        sorted_p = sorted_p[1:]  # remove leftmost (GK)
+                    else:
+                        sorted_p = sorted_p[:-1]  # remove rightmost (GK)
+                    if len(sorted_p) < 5:
+                        return "N/A"
+                    min_x = sorted_p[0]["avg_x"]
+                    max_x = sorted_p[-1]["avg_x"]
+                    rx = max_x - min_x
+                    if rx < 1:
+                        return "N/A"
+                    def_thresh = min_x + rx * 0.35
+                    mid_thresh = min_x + rx * 0.70
+                    defenders = [p for p in sorted_p if p["avg_x"] <= def_thresh]
+                    midfielders = [p for p in sorted_p if def_thresh < p["avg_x"] <= mid_thresh]
+                    forwards = [p for p in sorted_p if p["avg_x"] > mid_thresh]
+                    return f"{len(defenders)}-{len(midfielders)}-{len(forwards)}"
+
+                home_formation = detect_formation_from_players(home_players, is_home=True)
+                away_formation = detect_formation_from_players(away_players, is_home=False)
+
                 windows.append({
                     "window_id": window_id,
                     "label": f"{start_m}-{end_m} min",
                     "start_minute": float(start_m),
                     "end_minute": float(end_m),
                     "home_players": home_players,
-                    "away_players": away_players
+                    "away_players": away_players,
+                    "home_formation": home_formation,
+                    "away_formation": away_formation,
                 })
                 window_id += 1
                 
@@ -603,14 +641,38 @@ def get_formation(match_id: int, window_minutes: int = Query(5), period: int = Q
         raise HTTPException(status_code=500, detail=str(exc))
 
 @router.get("/{match_id}/pressing")
-def get_pressing(match_id: int, team: str = Query("home"), period: int = Query(0), distance_threshold: float = Query(5.0)):
+def get_pressing(
+    match_id: int,
+    team: str = Query("home"),
+    period: int = Query(0),
+    distance_threshold: float = Query(5.0),
+    start_minute: Optional[int] = Query(None),
+    end_minute: Optional[int] = Query(None)
+):
     try:
         match_data, tracking_df, player_lookup = get_match_resources(match_id)
-        
+
         df = tracking_df.copy()
         if period != 0:
             df = df[df["period"] == period]
-            
+
+        # Filter by minute window if specified
+        if start_minute is not None and end_minute is not None:
+            periods = match_data.get("match_periods", [])
+
+            def get_minute(frame):
+                for p in periods:
+                    if p["start_frame"] <= frame <= p["end_frame"]:
+                        frames_into = frame - p["start_frame"]
+                        mins = frames_into / (10 * 60)
+                        if p["period"] == 2:
+                            mins += 45
+                        return mins
+                return 0
+
+            df["minute"] = df["frame"].apply(get_minute)
+            df = df[(df["minute"] >= start_minute) & (df["minute"] <= end_minute)]
+
         if df.empty:
             raise HTTPException(status_code=404, detail="No data for this period")
             
@@ -680,7 +742,67 @@ def get_pressing(match_id: int, team: str = Query("home"), period: int = Query(0
             most_pressed_zone = unique[np.argmax(counts)]
             
         pressing_intensity_pct = (len(pressing_frames) / total_frames) * 100 if total_frames > 0 else 0
-        
+
+        # Zone breakdown (6 zones: 3x2 grid)
+        pitch_length = match_data.get("_pitch_dims", {}).get("length", 105.0)
+        pitch_width = match_data.get("_pitch_dims", {}).get("width", 68.0)
+
+        zones = {
+            "left_def": {"x": (0, pitch_length/3), "y": (0, pitch_width/2), "count": 0},
+            "center_def": {"x": (pitch_length/3, 2*pitch_length/3), "y": (0, pitch_width/2), "count": 0},
+            "right_def": {"x": (2*pitch_length/3, pitch_length), "y": (0, pitch_width/2), "count": 0},
+            "left_att": {"x": (0, pitch_length/3), "y": (pitch_width/2, pitch_width), "count": 0},
+            "center_att": {"x": (pitch_length/3, 2*pitch_length/3), "y": (pitch_width/2, pitch_width), "count": 0},
+            "right_att": {"x": (2*pitch_length/3, pitch_length), "y": (pitch_width/2, pitch_width), "count": 0},
+        }
+
+        for bx, by in pressing_locations:
+            for zone_name, zone in zones.items():
+                if (zone["x"][0] <= bx < zone["x"][1] and zone["y"][0] <= by < zone["y"][1]):
+                    zone["count"] += 1
+                    break
+
+        zone_breakdown = {zone_name: zone_data["count"] for zone_name, zone_data in zones.items()}
+
+        # Top pressers: per player, count frames they were near ball
+        player_pressing_counts = {}
+        for _, row in pressing_events.iterrows():
+            pid = row["player_id"]
+            if pid not in player_pressing_counts:
+                player_pressing_counts[pid] = 0
+            player_pressing_counts[pid] += 1
+
+        top_pressers = []
+        for pid, count in sorted(player_pressing_counts.items(), key=lambda x: x[1], reverse=True)[:5]:
+            pinfo = player_lookup.get(pid, {})
+            top_pressers.append({
+                "player_id": int(pid),
+                "name": pinfo.get("name", "Unknown"),
+                "team": pinfo.get("team", team),
+                "pressing_frames": int(count),
+                "pressing_pct": float(round((count / total_frames) * 100, 1)) if total_frames > 0 else 0.0
+            })
+
+        # Period breakdown (P1 vs P2 intensity)
+        period_breakdown = {}
+        if period == 0:  # Only compute if viewing full match
+            p1_df = df[df["period"] == 1]
+            p2_df = df[df["period"] == 2]
+
+            p1_total = p1_df["frame"].nunique()
+            p2_total = p2_df["frame"].nunique()
+
+            p1_pressing_frames = set(pressing_events[pressing_events["frame"].isin(p1_df["frame"])]["frame"])
+            p2_pressing_frames = set(pressing_events[pressing_events["frame"].isin(p2_df["frame"])]["frame"])
+
+            p1_intensity = (len(p1_pressing_frames) / p1_total * 100) if p1_total > 0 else 0
+            p2_intensity = (len(p2_pressing_frames) / p2_total * 100) if p2_total > 0 else 0
+
+            period_breakdown = {
+                "p1_intensity_pct": float(round(p1_intensity, 1)),
+                "p2_intensity_pct": float(round(p2_intensity, 1))
+            }
+
         return {
             "team": team,
             "period": period,
@@ -692,7 +814,10 @@ def get_pressing(match_id: int, team: str = Query("home"), period: int = Query(0
                 "total_pressing_events": len(pressing_locations),
                 "most_pressed_zone": str(most_pressed_zone),
                 "avg_pressing_distance_m": float(round(avg_pressing_distance_m, 2))
-            }
+            },
+            "zone_breakdown": zone_breakdown,
+            "top_pressers": top_pressers,
+            "period_breakdown": period_breakdown if period_breakdown else None
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -1040,19 +1165,78 @@ def get_ball_trajectory(
         counts = ball_df["speed_class"].value_counts()
 
         points = []
-        for _, row in ball_df.iterrows():
-            points.append({
+        vx_arr = dx.values
+        vy_arr = dy.values
+        touch_frames = []
+        for i in range(2, len(vx_arr)):
+            v1 = np.array([vx_arr[i-1], vy_arr[i-1]])
+            v2 = np.array([vx_arr[i], vy_arr[i]])
+            n1b, n2b = np.linalg.norm(v1), np.linalg.norm(v2)
+            if n1b > 0.01 and n2b > 0.01:
+                cos_ab = np.clip(np.dot(v1, v2) / (n1b * n2b), -1, 1)
+                angle_ab = np.degrees(np.arccos(cos_ab))
+                if angle_ab > 90:
+                    touch_frames.append(i - 1)
+
+        # Build player lookup dict by pid for fast access
+        # Get context players at start frame
+        start_frame_num = int(ball_df.iloc[0]["frame"]) if not ball_df.empty else None
+        context_players = []
+        if start_frame_num is not None:
+            players_at_start = tracking_df[
+                (tracking_df["frame"] == start_frame_num) &
+                (tracking_df["player_id"] != -1)
+            ].dropna(subset=["x_m", "y_m"])
+            for _, pr in players_at_start.iterrows():
+                pid = int(pr["player_id"])
+                pinfo = player_lookup.get(pid, {})
+                context_players.append({
+                    "player_id": pid,
+                    "x_m": float(round(pr["x_m"], 2)),
+                    "y_m": float(round(pr["y_m"], 2)),
+                    "team": pinfo.get("team", "unknown"),
+                    "last_name": pinfo.get("last_name", pinfo.get("name", str(pid))),
+                })
+
+        for idx_i, (_, row) in enumerate(ball_df.iterrows()):
+            # Find nearest player at touch frames
+            nearest_player_name = ""
+            nearest_team = ""
+            if idx_i in touch_frames:
+                frame_num_t = int(row["frame"])
+                bx_t, by_t = float(row["x_m"]), float(row["y_m"])
+                players_at_touch = tracking_df[
+                    (tracking_df["frame"] == frame_num_t) &
+                    (tracking_df["player_id"] != -1)
+                ].dropna(subset=["x_m", "y_m"])
+                if not players_at_touch.empty:
+                    dists_t = np.sqrt(
+                        (players_at_touch["x_m"].values - bx_t)**2 +
+                        (players_at_touch["y_m"].values - by_t)**2
+                    )
+                    nearest_pid = int(players_at_touch.iloc[dists_t.argmin()]["player_id"])
+                    np_info = player_lookup.get(nearest_pid, {})
+                    nearest_player_name = np_info.get("last_name", np_info.get("name", ""))
+                    nearest_team = np_info.get("team", "")
+
+            pt = {
                 "minute": float(round(row["minute"], 3)),
                 "x_m": float(round(row["x_m"], 2)),
                 "y_m": float(round(row["y_m"], 2)),
                 "speed_kmh": float(round(row["speed_kmh"], 1)),
                 "speed_class": row["speed_class"],
-            })
+            }
+            if idx_i in touch_frames:
+                pt["is_touch"] = True
+                pt["nearest_player"] = nearest_player_name
+                pt["nearest_team"] = nearest_team
+            points.append(pt)
 
         max_idx = ball_df["speed_kmh"].idxmax()
 
         return {
             "points": points,
+            "context_players": context_players,
             "stats": {
                 "total_points": total,
                 "avg_speed_kmh": float(round(ball_df["speed_kmh"].mean(), 1)),

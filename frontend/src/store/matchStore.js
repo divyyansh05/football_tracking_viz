@@ -19,6 +19,8 @@ export const useMatchStore = create((set, get) => ({
   animationFrameId: null,
   isFetchingBatch: false,
   matchesList: [],
+  _rafCleanup: null,
+  pitchDimensions: { length: 105, width: 68, x_offset: 52.5, y_offset: 34.0 },
 
   // Actions
   setMatchId: (id) => set({ matchId: id }),
@@ -69,6 +71,23 @@ export const useMatchStore = create((set, get) => ({
       setMetadata(metadata)
       setAvailableFrames(availableFrames)
 
+      // Normalize: add player_id alias from id so all components use player_id consistently
+      if (metadata?.players) {
+        const normalized = {
+          ...metadata,
+          players: metadata.players.map(p => ({
+            ...p,
+            player_id: p.player_id ?? p.id
+          }))
+        }
+        setMetadata(normalized)
+      }
+
+      // Extract and store pitch dimensions
+      if (metadata.pitch) {
+        set({ pitchDimensions: metadata.pitch })
+      }
+
       // Fetch initial frame
       const initialFrame = availableFrames.first_frame || 6020
       await fetchFrame(initialFrame)
@@ -93,97 +112,103 @@ export const useMatchStore = create((set, get) => ({
       setCurrentFrame(frame)
     } catch (err) {
       console.error('Failed to fetch frame:', err)
+      // Do NOT clear frameData on error - keep showing last valid frame
     }
   },
 
   // Start playback
-  startPlay: async () => {
-    const { isPlaying, currentFrame, availableFrames, matchId, stopPlay } = get()
-
-    if (isPlaying || !matchId || !availableFrames) return
+  startPlay: () => {
+    const store = get()
+    if (store.isPlaying) return
 
     set({ isPlaying: true })
 
-    let lastFrameTime = performance.now()
-    let buffer = get().frameBuffer
+    // Prefetch buffer: Map<frameNumber, frameData>
+    const frameBuffer = new Map()
+    let animRunning = true
+    let lastTimestamp = null
+    const FRAME_INTERVAL_MS = 100  // 10Hz
 
-    // Initial prefetch
-    const prefetchMore = async () => {
-      const state = get()
-      if (state.isFetchingBatch || !state.isPlaying) return
-
-      set({ isFetchingBatch: true })
-      
-      const maxFrameInBuffer = buffer.size > 0 
-        ? Math.max(...Array.from(buffer.keys())) 
-        : state.currentFrame
-
-      const nextBatchEnd = Math.min(maxFrameInBuffer + 50, state.availableFrames.last_frame)
-      
-      if (maxFrameInBuffer < nextBatchEnd) {
-        try {
-          const res = await api.getFrameBatch(state.matchId, maxFrameInBuffer + 1, nextBatchEnd, 1)
-          // Also need to fetch the time for these frames? The batch endpoint returns minimal frames
-          // Actually, let's look at the batch endpoint. It returns { frames: [{ frame, players, ball }] }
-          // We need the full frame format for setFrameData. Let's see what getFrameBatch returns.
-          // Wait, getFrameBatch doesn't return time or player stats.
-          // Let's modify the backend get_frames_batch to include time, or just calculate time in frontend.
-          // The backend get_frames_batch returns MinimalFrame which lacks `time` and player details.
-          // If we use batching, we need `time` object. The batch endpoint was specifically designed for this!
-          // Actually, let's just use the batch data. But we need `time` for the UI.
-          // Let's implement it with getFrameBatch and calculate time client-side or check if the batch endpoint needs an update.
-          // wait, the prompt says "Prefetch next 50 frames...". I will just use api.getFrameBatch and update the frameBuffer.
-          const newFrames = res.frames || []
-          
-          const newBuffer = new Map(get().frameBuffer)
-          for (const f of newFrames) {
-            // Need to merge with previous frame time logic if it's missing
-            newBuffer.set(f.frame, f)
-          }
-          set({ frameBuffer: newBuffer })
-          buffer = newBuffer // update local reference for loop
-        } catch (err) {
-          console.error("Prefetch failed:", err)
+    // Prefetch function — fetches next N frames in batch
+    const prefetch = async (fromFrame, count = 60) => {
+      const toFrame = fromFrame + count
+      try {
+        const result = await api.getFrameBatch(
+          get().matchId, fromFrame, toFrame, 1
+        )
+        if (result.frames) {
+          result.frames.forEach(f => frameBuffer.set(f.frame, f))
         }
+      } catch (e) {
+        console.warn('Prefetch failed:', e)
+        // Do not stop playback on prefetch failure
+        // Just let buffer drain naturally
       }
-      set({ isFetchingBatch: false })
     }
 
-    await prefetchMore()
+    // Start initial prefetch
+    const currentFrame = get().currentFrame
+    prefetch(currentFrame, 60)
 
+    // Animation loop using requestAnimationFrame only
     const animate = (timestamp) => {
-      const state = get()
-      if (!state.isPlaying) return
+      if (!animRunning) return
+      if (!get().isPlaying) {
+        animRunning = false
+        return
+      }
 
-      if (timestamp - lastFrameTime >= 100) {
-        const nextFrame = state.currentFrame + 1
+      if (lastTimestamp === null) {
+        lastTimestamp = timestamp
+      }
 
-        if (nextFrame > state.availableFrames.last_frame) {
-          stopPlay()
+      const elapsed = timestamp - lastTimestamp
+
+      if (elapsed >= FRAME_INTERVAL_MS) {
+        lastTimestamp = timestamp
+
+        const current = get().currentFrame
+        const available = get().availableFrames
+
+        // Stop if end of match
+        if (available && current >= available.last_frame) {
+          set({ isPlaying: false })
+          animRunning = false
           return
         }
 
-        if (buffer.has(nextFrame)) {
-          // We need to inject `time` if the batch endpoint doesn't have it.
-          // The frameData needs to look like what getFrame returns.
-          // Actually, the user asked to just setFrameData(buffer.get(nextFrame)).
-          // But getFrame returns enriched players with name, team, speed etc.
-          // Batch frames only have player_id, x_m, y_m. 
-          // We can merge static data from `metadata` (names, teams) and assume speed/accel are empty,
-          // but the hover tooltip needs speed!
-          // Wait, the batch endpoint specifically states: "Keep payload small for animation. {player_id, x_m, y_m} plus ball."
-          // So we should merge it with the previous full frame data, updating only positions.
+        const nextFrame = current + 1
+
+        if (frameBuffer.has(nextFrame)) {
+          const frameData = frameBuffer.get(nextFrame)
+          frameBuffer.delete(nextFrame)
+
+          // Merge with previous frame data to preserve player names/metadata
           const prevFrameData = get().frameData
-          const minFrame = buffer.get(nextFrame)
-          
           const newPlayers = prevFrameData.players.map(p => {
-            const minP = minFrame.players.find(mp => mp.player_id === p.player_id)
+            const minP = frameData.players.find(mp => mp.player_id === p.player_id)
             if (minP) {
-              return { ...p, x_m: minP.x_m, y_m: minP.y_m }
+              // Calculate speed from position change
+              const dx = minP.x_m - p.x_m
+              const dy = minP.y_m - p.y_m
+              const distance = Math.sqrt(dx * dx + dy * dy)
+              const newSpeed = distance / 0.1  // m/s (0.1s per frame at 10Hz)
+
+              // Calculate acceleration from speed change
+              const speedDelta = newSpeed - (p.speed || 0)
+              const newAccel = speedDelta / 0.1  // m/s²
+
+              return {
+                ...p,
+                x_m: minP.x_m,
+                y_m: minP.y_m,
+                speed: newSpeed,
+                accel: newAccel
+              }
             }
             return p
           })
-          
+
           // Estimate time by adding 0.1s to previous time
           const prevTime = prevFrameData.time
           let newDeci = prevTime.deciseconds + 1
@@ -191,56 +216,54 @@ export const useMatchStore = create((set, get) => ({
           let newMin = prevTime.minutes
           if (newDeci >= 10) { newDeci = 0; newSec += 1 }
           if (newSec >= 60) { newSec = 0; newMin += 1 }
-          
-          const newFrameData = {
-            frame: nextFrame,
-            time: {
-              ...prevTime,
-              minutes: newMin,
-              seconds: newSec,
-              deciseconds: newDeci,
-              timestamp: `${String(newMin).padStart(2,'0')}:${String(newSec).padStart(2,'0')}.${newDeci}`
-            },
-            players: newPlayers,
-            ball: minFrame.ball
-          }
 
-          set({ frameData: newFrameData, currentFrame: nextFrame })
-          
-          const newBuffer = new Map(get().frameBuffer)
-          newBuffer.delete(nextFrame)
-          set({ frameBuffer: newBuffer })
-          buffer = newBuffer
+          // Update store with new frame data
+          set({
+            currentFrame: nextFrame,
+            frameData: {
+              frame: nextFrame,
+              time: {
+                ...prevTime,
+                minutes: newMin,
+                seconds: newSec,
+                deciseconds: newDeci,
+                timestamp: `${String(newMin).padStart(2,'0')}:${String(newSec).padStart(2,'0')}.${newDeci}`
+              },
+              players: newPlayers,
+              ball: frameData.ball || null
+            }
+          })
 
-          if (buffer.size < 20) {
-            prefetchMore()
+          // Refetch when buffer is low
+          if (frameBuffer.size < 20) {
+            const lastBuffered = Math.max(...frameBuffer.keys(), nextFrame)
+            prefetch(lastBuffered + 1, 60)
           }
         } else {
-          // Buffer underrun, wait for prefetch
-          if (buffer.size < 20) {
-            prefetchMore()
-          }
+          // Buffer empty — skip this tick but keep running
+          // Do not stop. Buffer will refill from prefetch.
+          console.debug('Buffer empty at frame', nextFrame, '— waiting')
+          // Trigger immediate prefetch
+          prefetch(current + 1, 60)
         }
-        lastFrameTime = timestamp
       }
 
-      const animId = requestAnimationFrame(animate)
-      set({ animationFrameId: animId })
+      // Always continue the loop
+      if (animRunning && get().isPlaying) {
+        requestAnimationFrame(animate)
+      }
     }
 
-    const animId = requestAnimationFrame(animate)
-    set({ animationFrameId: animId })
+    // Start the loop and store cleanup function
+    requestAnimationFrame(animate)
+    set({ _rafCleanup: () => { animRunning = false } })
   },
 
   // Stop playback
   stopPlay: () => {
-    const { animationFrameId } = get()
-
-    if (animationFrameId) {
-      cancelAnimationFrame(animationFrameId)
-    }
-
-    set({ isPlaying: false, animationFrameId: null })
+    const cleanup = get()._rafCleanup
+    if (cleanup) cleanup()
+    set({ isPlaying: false, _rafCleanup: null })
   },
 
   // Step frame by delta

@@ -4,6 +4,17 @@ import { api } from '../../api/client'
 import Spinner from '../../components/ui/Spinner'
 import PitchSVG from '../../components/pitch/PitchSVG'
 import VoronoiOverlay from '../../components/pitch/VoronoiOverlay'
+import PitchOrientation from '../../components/pitch/PitchOrientation'
+import { fmt } from '../../utils/format'
+
+function useDebounce(value, delay) {
+  const [debouncedValue, setDebouncedValue] = useState(value)
+  useEffect(() => {
+    const handler = setTimeout(() => setDebouncedValue(value), delay)
+    return () => clearTimeout(handler)
+  }, [value, delay])
+  return debouncedValue
+}
 
 function AreaChart({ timeline, homeName, awayName, homeColor, awayColor }) {
   if (!timeline || timeline.length === 0) return null
@@ -115,11 +126,12 @@ function MomentumBar({ blocks, homeColor, awayColor, totalMinutes }) {
 }
 
 export default function SpaceControl() {
-  const { matchId, metadata } = useMatchStore()
+  const { matchId, metadata, pitchDimensions } = useMatchStore()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [snapshotMinute, setSnapshotMinute] = useState(45)
+  const debouncedSnapshot = useDebounce(snapshotMinute, 400)
   const [snapshotData, setSnapshotData] = useState(null)
   const [snapshotLoading, setSnapshotLoading] = useState(false)
   const cachedRef = useRef(null)
@@ -141,23 +153,24 @@ export default function SpaceControl() {
       .finally(() => setLoading(false))
   }, [matchId])
 
-  const handleSnapshotFetch = () => {
-    if (!matchId || !metadata) return
-    // Find frame closest to requested minute from timeline
-    if (!data?.timeline?.length) return
+  // Auto-fetch snapshot when debounced minute changes
+  useEffect(() => {
+    if (!matchId || !metadata || !data?.timeline?.length) return
+
     const tl = data.timeline
     let best = tl[0]
-    let bestDiff = Math.abs(tl[0].minute - snapshotMinute)
+    let bestDiff = Math.abs(tl[0].minute - debouncedSnapshot)
     for (const pt of tl) {
-      const d = Math.abs(pt.minute - snapshotMinute)
+      const d = Math.abs(pt.minute - debouncedSnapshot)
       if (d < bestDiff) { bestDiff = d; best = pt }
     }
+
     setSnapshotLoading(true)
     api.getVoronoiFrame(matchId, best.frame)
       .then(res => setSnapshotData(res))
       .catch(err => console.error('Snapshot error', err))
       .finally(() => setSnapshotLoading(false))
-  }
+  }, [matchId, metadata, data, debouncedSnapshot])
 
   if (!metadata) return <div style={{ padding: 32, color: '#888' }}>Loading match data...</div>
 
@@ -189,29 +202,96 @@ export default function SpaceControl() {
 
       {data && (
         <>
-          {/* Area chart */}
-          <div style={{ background: '#1a1d2e', borderRadius: 12, padding: 20, marginBottom: 20 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-              <h3 style={{ fontSize: 15, color: '#ccc', margin: 0 }}>Space Control Over Match</h3>
-              <div style={{ display: 'flex', gap: 16, fontSize: 12 }}>
-                <span><span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 2, background: homeColor, marginRight: 5 }}></span>{homeName}</span>
-                <span><span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 2, background: awayColor, marginRight: 5 }}></span>{awayName}</span>
-              </div>
-            </div>
-            <AreaChart timeline={data.timeline} homeName={homeName} awayName={awayName} homeColor={homeColor} awayColor={awayColor} />
-          </div>
+          {/* Two-column layout: chart + pitch */}
+          <div className="space-control-layout" style={{ display: 'flex', gap: 24, marginBottom: 20, flexWrap: 'wrap' }}>
 
-          {/* Momentum bar */}
-          <div style={{ background: '#1a1d2e', borderRadius: 12, padding: 20, marginBottom: 20 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-              <h3 style={{ fontSize: 15, color: '#ccc', margin: 0 }}>Momentum Map</h3>
-              <div style={{ display: 'flex', gap: 12, fontSize: 11, color: '#aaa' }}>
-                <span><span style={{ display: 'inline-block', width: 10, height: 10, background: homeColor, marginRight: 4 }}></span>Home dominant</span>
-                <span><span style={{ display: 'inline-block', width: 10, height: 10, background: '#444', marginRight: 4 }}></span>Contested</span>
-                <span><span style={{ display: 'inline-block', width: 10, height: 10, background: awayColor, marginRight: 4 }}></span>Away dominant</span>
+            {/* Left column: Chart + Momentum */}
+            <div className="space-control-chart" style={{ flex: '1 1 55%', minWidth: 400, display: 'flex', flexDirection: 'column', gap: 20 }}>
+              {/* Area chart */}
+              <div style={{ background: '#1a1d2e', borderRadius: 12, padding: 20 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                  <h3 style={{ fontSize: 15, color: '#ccc', margin: 0 }}>Space Control Over Match</h3>
+                  <div style={{ display: 'flex', gap: 16, fontSize: 12 }}>
+                    <span><span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 2, background: homeColor, marginRight: 5 }}></span>{homeName}</span>
+                    <span><span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 2, background: awayColor, marginRight: 5 }}></span>{awayName}</span>
+                  </div>
+                </div>
+                <AreaChart timeline={data.timeline} homeName={homeName} awayName={awayName} homeColor={homeColor} awayColor={awayColor} />
+              </div>
+
+              {/* Momentum bar */}
+              <div style={{ background: '#1a1d2e', borderRadius: 12, padding: 20 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                  <h3 style={{ fontSize: 15, color: '#ccc', margin: 0 }}>Momentum Map</h3>
+                  <div style={{ display: 'flex', gap: 12, fontSize: 11, color: '#aaa' }}>
+                    <span><span style={{ display: 'inline-block', width: 10, height: 10, background: homeColor, marginRight: 4 }}></span>Home dominant</span>
+                    <span><span style={{ display: 'inline-block', width: 10, height: 10, background: '#444', marginRight: 4 }}></span>Contested</span>
+                    <span><span style={{ display: 'inline-block', width: 10, height: 10, background: awayColor, marginRight: 4 }}></span>Away dominant</span>
+                  </div>
+                </div>
+                <MomentumBar blocks={data.momentum_blocks} homeColor={homeColor} awayColor={awayColor} />
               </div>
             </div>
-            <MomentumBar blocks={data.momentum_blocks} homeColor={homeColor} awayColor={awayColor} />
+
+            {/* Right column: Pitch snapshot */}
+            <div className="space-control-pitch" style={{ flex: '1 1 40%', minWidth: 350 }}>
+              <div style={{ background: '#1a1d2e', borderRadius: 12, padding: 20 }}>
+                <h3 style={{ fontSize: 15, color: '#ccc', marginBottom: 4 }}>
+                  Space Control at Minute <span style={{ color: '#60a5fa', fontWeight: 'bold' }}>{snapshotMinute}</span>
+                </h3>
+                <div style={{ position: 'relative' }}>
+                  {snapshotLoading && (
+                    <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(26,29,46,0.8)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 10 }}>
+                      <Spinner />
+                    </div>
+                  )}
+                  <PitchSVG pitchLength={pitchDimensions.length} pitchWidth={pitchDimensions.width}>
+                    {snapshotData && (
+                      <VoronoiOverlay
+                        voronoiData={snapshotData}
+                        homeColor={homeColor}
+                        awayColor={awayColor}
+                        showLines={true}
+                      />
+                    )}
+                    <PitchOrientation
+                      homeTeamName={metadata.home_team.short_name}
+                      awayTeamName={metadata.away_team.short_name}
+                      homeColor={homeColor}
+                      awayColor={awayColor}
+                      pitchLength={pitchDimensions.length}
+                      pitchWidth={pitchDimensions.width}
+                    />
+                  </PitchSVG>
+                </div>
+
+                {/* Minute slider */}
+                <div style={{ marginTop: 16 }}>
+                  <input
+                    type="range"
+                    min="0" max="97" step="1"
+                    value={snapshotMinute}
+                    onChange={e => setSnapshotMinute(parseInt(e.target.value))}
+                    style={{ width: '100%' }}
+                  />
+                  <div style={{ fontSize: 11, color: '#666', marginTop: 4, textAlign: 'center' }}>
+                    Drag to explore space control over the match
+                  </div>
+                </div>
+
+                {/* Snapshot territory cards */}
+                {snapshotData?.summary && (
+                  <div className="snapshot-summary" style={{ display: 'flex', gap: 12, marginTop: 16, justifyContent: 'space-around' }}>
+                    <span style={{ color: homeColor, fontSize: 14, fontWeight: 'bold' }}>
+                      {metadata.home_team.short_name}: {fmt.pct(snapshotData.summary.home_pct)}
+                    </span>
+                    <span style={{ color: awayColor, fontSize: 14, fontWeight: 'bold' }}>
+                      {metadata.away_team.short_name}: {fmt.pct(snapshotData.summary.away_pct)}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
 
           {/* Summary stats */}
@@ -227,36 +307,6 @@ export default function SpaceControl() {
                 <div style={{ fontSize: s.small ? 13 : 22, fontWeight: 'bold', color: s.color || '#60a5fa', lineHeight: 1.2 }}>{s.value}</div>
               </div>
             ))}
-          </div>
-
-          {/* Pitch snapshot */}
-          <div style={{ background: '#1a1d2e', borderRadius: 12, padding: 20 }}>
-            <h3 style={{ fontSize: 15, color: '#ccc', marginBottom: 12 }}>Voronoi Snapshot at Minute</h3>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
-              <label style={{ fontSize: 13, color: '#aaa' }}>Minute:</label>
-              <input
-                type="number" min="0" max="97" value={snapshotMinute}
-                onChange={e => setSnapshotMinute(parseInt(e.target.value, 10) || 0)}
-                style={{ width: 70, padding: '6px 10px', borderRadius: 6, background: '#111827', border: '1px solid #333', color: 'white', fontSize: 14 }}
-              />
-              <button onClick={handleSnapshotFetch}
-                style={{ padding: '6px 16px', borderRadius: 6, background: '#3b82f6', border: 'none', color: 'white', cursor: 'pointer', fontSize: 13 }}>
-                Show Voronoi
-              </button>
-              {snapshotLoading && <Spinner />}
-            </div>
-
-            {snapshotData && (
-              <PitchSVG>
-                <VoronoiOverlay voronoiData={snapshotData} homeColor={homeColor} awayColor={awayColor} showLines />
-              </PitchSVG>
-            )}
-
-            {!snapshotData && !snapshotLoading && (
-              <div style={{ height: 120, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#555', fontSize: 13 }}>
-                Enter a minute and click "Show Voronoi"
-              </div>
-            )}
           </div>
         </>
       )}

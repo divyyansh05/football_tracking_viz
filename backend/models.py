@@ -38,6 +38,14 @@ class PeriodInfo(BaseModel):
     duration_minutes: float
 
 
+# ─── Pitch Models ─────────────────────────────────────────────────────────────
+class PitchDimensions(BaseModel):
+    length: float
+    width: float
+    x_offset: float
+    y_offset: float
+
+
 # ─── Match Metadata ───────────────────────────────────────────────────────────
 class MatchMetadata(BaseModel):
     match_id: int
@@ -52,6 +60,7 @@ class MatchMetadata(BaseModel):
     round: str
     match_periods: List[PeriodInfo]
     players: List[PlayerInfo]
+    pitch: PitchDimensions
 
 
 # ─── Frame Data Models ────────────────────────────────────────────────────────
@@ -88,6 +97,7 @@ class PitchControlResponse(BaseModel):
     x_coords: List[float]
     y_coords: List[float]
     summary: dict
+    box_control: Optional[dict] = None
 
 
 # ─── Voronoi Models ───────────────────────────────────────────────────────────

@@ -201,6 +201,9 @@ export default function PhysicalDashboard() {
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                               <span style={{ width: 3, height: 16, background: tc, borderRadius: 2, display: 'inline-block', flexShrink: 0 }}></span>
                               <span style={{ fontWeight: 'bold' }}>{p.name}</span>
+                              {p.minutes_played < 80 && (
+                                <span className="sub-badge" title="Substitute (played &lt;80 min)">SUB</span>
+                              )}
                             </div>
                           </td>
                           <td style={{ padding: '10px 12px', textAlign: 'center', color: '#94a3b8', fontSize: 11 }}>{p.position}</td>

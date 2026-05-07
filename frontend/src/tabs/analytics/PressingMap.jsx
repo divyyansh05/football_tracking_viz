@@ -17,13 +17,15 @@ function useDebounce(value, delay) {
 }
 
 export default function PressingMap() {
-  const { matchId, metadata } = useMatchStore()
+  const { matchId, metadata, pitchDimensions } = useMatchStore()
   
   const [teamFilter, setTeamFilter] = useState('home')
   const [period, setPeriod] = useState(0)
   const [thresholdSlider, setThresholdSlider] = useState(5.0)
   const threshold = useDebounce(thresholdSlider, 500)
-  
+  const [minuteWindow, setMinuteWindow] = useState(null) // null = full match
+  const debouncedMinuteWindow = useDebounce(minuteWindow, 400)
+
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [showCompare, setShowCompare] = useState(false)
@@ -37,7 +39,9 @@ export default function PressingMap() {
     const fetchPressing = async () => {
       setLoading(true)
       try {
-        const result = await api.getPressingMap(matchId, teamFilter, period, threshold)
+        const startMin = debouncedMinuteWindow
+        const endMin = debouncedMinuteWindow !== null ? debouncedMinuteWindow + 5 : null
+        const result = await api.getPressingMap(matchId, teamFilter, period, threshold, startMin, endMin)
         setData(result)
       } catch (err) {
         console.error("Failed to fetch pressing map", err)
@@ -46,7 +50,7 @@ export default function PressingMap() {
       }
     }
     fetchPressing()
-  }, [matchId, teamFilter, period, threshold])
+  }, [matchId, teamFilter, period, threshold, debouncedMinuteWindow])
 
   // Fetch comparison data when panel opened
   useEffect(() => {
@@ -105,7 +109,7 @@ export default function PressingMap() {
           )}
           
           {/* Half line marker */}
-          <line x1={52.5} y1={0} x2={52.5} y2={68} stroke="white" strokeWidth={0.5} strokeDasharray="2,2" opacity={0.5} />
+          <line x1={pitchDimensions.length / 2} y1={0} x2={pitchDimensions.length / 2} y2={pitchDimensions.width} stroke="white" strokeWidth={0.5} strokeDasharray="2,2" opacity={0.5} />
           
           {/* Label pressing zone */}
           {mapData.team === 'home' ? (
@@ -116,6 +120,31 @@ export default function PressingMap() {
             <text x={26.25} y={34} fill="white" opacity={0.3} fontSize={4} textAnchor="middle" transform="rotate(-90 26.25 34)">
               OPPONENT HALF (PRESSING ZONE)
             </text>
+          )}
+
+          {/* Threshold circle visualization */}
+          {!isCompare && (
+            <g className="threshold-indicator">
+              <circle
+                cx={mapData.team === 'home' ? 78.75 : 26.25}
+                cy={34}
+                r={thresholdSlider}
+                fill="none"
+                stroke="white"
+                strokeWidth={0.3}
+                strokeDasharray="1,1"
+                opacity={0.4}
+              />
+              <text
+                x={mapData.team === 'home' ? 78.75 : 26.25}
+                y={34 + thresholdSlider + 2}
+                textAnchor="middle"
+                fontSize={1.2}
+                fill="white"
+                opacity={0.5}>
+                {thresholdSlider}m threshold
+              </text>
+            </g>
           )}
         </PitchSVG>
         
@@ -169,13 +198,38 @@ export default function PressingMap() {
               <span style={{ fontSize: '13px', color: '#888' }}>Pressing range: {thresholdSlider} m</span>
               <span style={{ fontSize: '12px', color: '#555' }}>Distance from ball considered 'pressing'</span>
             </div>
-            <input 
-              type="range" 
-              min="2" max="10" step="0.5" 
-              value={thresholdSlider} 
+            <input
+              type="range"
+              min="2" max="10" step="0.5"
+              value={thresholdSlider}
               onChange={(e) => setThresholdSlider(parseFloat(e.target.value))}
               style={{ width: '100%' }}
             />
+          </div>
+        </div>
+
+        <div className="minute-window-control" style={{ borderTop: '1px solid #2a2d3e', paddingTop: '16px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', alignItems: 'center' }}>
+            <span style={{ fontSize: '13px', color: '#888' }}>
+              {minuteWindow === null ? 'Viewing: Full Match' : `Viewing: Minute ${minuteWindow} — ${minuteWindow + 5}`}
+            </span>
+            {minuteWindow !== null && (
+              <button
+                onClick={() => setMinuteWindow(null)}
+                style={{ padding: '4px 12px', background: '#333', border: '1px solid #555', borderRadius: '4px', color: '#ccc', cursor: 'pointer', fontSize: '12px' }}>
+                Show Full Match
+              </button>
+            )}
+          </div>
+          <input
+            type="range"
+            min="0" max="90" step="5"
+            value={minuteWindow === null ? 0 : minuteWindow}
+            onChange={(e) => setMinuteWindow(parseInt(e.target.value))}
+            style={{ width: '100%' }}
+          />
+          <div style={{ fontSize: '11px', color: '#666', marginTop: '4px' }}>
+            Slide to explore pressing by 5-minute windows
           </div>
         </div>
       </div>
@@ -225,7 +279,96 @@ export default function PressingMap() {
                 {getInterpretation(data.stats.pressing_intensity_pct).text}
               </div>
             </div>
-            
+
+            {/* Zone breakdown */}
+            {data.zone_breakdown && (
+              <div className="zone-breakdown-card" style={{ background: '#1a1d2e', padding: '20px', borderRadius: '12px' }}>
+                <h4 style={{ color: '#fff', marginBottom: '12px', fontSize: '14px' }}>Pressing by Zone</h4>
+                <div className="zone-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
+                  {[
+                    { key: 'left_att', label: 'Left Attack' },
+                    { key: 'center_att', label: 'Center Attack' },
+                    { key: 'right_att', label: 'Right Attack' },
+                    { key: 'left_def', label: 'Left Def' },
+                    { key: 'center_def', label: 'Center Def' },
+                    { key: 'right_def', label: 'Right Def' }
+                  ].map(zone => {
+                    const count = data.zone_breakdown[zone.key] || 0
+                    const maxCount = Math.max(...Object.values(data.zone_breakdown))
+                    const intensity = maxCount > 0 ? count / maxCount : 0
+                    const teamColor = data.team === 'home' ? metadata.home_team.jersey_color : metadata.away_team.jersey_color
+                    const teamRgb = hexToRgb(teamColor)
+                    return (
+                      <div
+                        key={zone.key}
+                        className="zone-cell"
+                        style={{
+                          background: `rgba(${teamRgb}, ${intensity * 0.6})`,
+                          border: '1px solid #333',
+                          borderRadius: '6px',
+                          padding: '12px 8px',
+                          textAlign: 'center'
+                        }}>
+                        <div style={{ fontSize: '10px', color: '#aaa', textTransform: 'uppercase', marginBottom: '4px' }}>
+                          {zone.label}
+                        </div>
+                        <div style={{ fontSize: '16px', color: 'white', fontWeight: 'bold' }}>
+                          {count}
+                        </div>
+                        <div style={{ fontSize: '9px', color: '#666' }}>events</div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Top pressers */}
+            {data.top_pressers && data.top_pressers.length > 0 && (
+              <div className="top-pressers-card" style={{ background: '#1a1d2e', padding: '20px', borderRadius: '12px' }}>
+                <h4 style={{ color: '#fff', marginBottom: '12px', fontSize: '14px' }}>Top Pressing Players</h4>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid #333', color: '#888' }}>
+                      <th style={{ padding: '8px', textAlign: 'left' }}>Player</th>
+                      <th style={{ padding: '8px', textAlign: 'right' }}>Events</th>
+                      <th style={{ padding: '8px', textAlign: 'right' }}>% Match</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.top_pressers.map(p => (
+                      <tr key={p.player_id} style={{ borderBottom: '1px solid #2a2d3e' }}>
+                        <td style={{ padding: '8px', color: 'white' }}>{p.name}</td>
+                        <td style={{ padding: '8px', textAlign: 'right', color: '#ccc' }}>{p.pressing_frames}</td>
+                        <td style={{ padding: '8px', textAlign: 'right', color: '#ccc' }}>{p.pressing_pct}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* Period breakdown */}
+            {data.period_breakdown && (
+              <div className="period-breakdown-card" style={{ background: '#1e2235', padding: '16px', borderRadius: '12px', border: '1px solid #333' }}>
+                <h4 style={{ color: '#fff', marginBottom: '12px', fontSize: '14px' }}>Period Comparison</h4>
+                <div style={{ display: 'flex', justifyContent: 'space-around' }}>
+                  <div style={{ textAlign: 'center' }}>
+                    <div style={{ fontSize: '11px', color: '#888' }}>Period 1</div>
+                    <div style={{ fontSize: '20px', color: 'white', fontWeight: 'bold' }}>
+                      {data.period_breakdown.p1_intensity_pct}%
+                    </div>
+                  </div>
+                  <div style={{ textAlign: 'center' }}>
+                    <div style={{ fontSize: '11px', color: '#888' }}>Period 2</div>
+                    <div style={{ fontSize: '20px', color: 'white', fontWeight: 'bold' }}>
+                      {data.period_breakdown.p2_intensity_pct}%
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
           </div>
         </div>
       )}

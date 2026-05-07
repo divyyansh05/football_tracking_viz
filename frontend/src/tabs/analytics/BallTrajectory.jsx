@@ -25,7 +25,7 @@ const PRESETS = [
   { label: 'Last 5 min', period: 2, start: 85, end: 90 },
 ]
 
-function TrajectoryOverlay({ points }) {
+function TrajectoryOverlay({ points, contextPlayers, homeColor, awayColor }) {
   if (!points || points.length < 2) return null
 
   // Draw colored segments between consecutive points
@@ -43,25 +43,35 @@ function TrajectoryOverlay({ points }) {
 
   const start = points[0], end = points[points.length - 1]
 
-  // Touch events: consecutive direction changes
-  const touchDots = []
-  for (let i = 2; i < points.length; i++) {
-    const dx1 = points[i-1].x_m - points[i-2].x_m
-    const dy1 = points[i-1].y_m - points[i-2].y_m
-    const dx2 = points[i].x_m - points[i-1].x_m
-    const dy2 = points[i].y_m - points[i-1].y_m
-    const n1 = Math.sqrt(dx1*dx1 + dy1*dy1), n2 = Math.sqrt(dx2*dx2 + dy2*dy2)
-    if (n1 > 0.1 && n2 > 0.1) {
-      const cos = (dx1*dx2 + dy1*dy2) / (n1 * n2)
-      const angle = Math.acos(Math.max(-1, Math.min(1, cos))) * 180 / Math.PI
-      if (angle > 90) {
-        touchDots.push(<circle key={i} cx={points[i-1].x_m} cy={points[i-1].y_m} r="0.5" fill="white" opacity="0.7" />)
-      }
-    }
-  }
+  // Touch events: use is_touch flag from backend
+  const touchDots = points
+    .filter(p => p.is_touch)
+    .map((p, i) => (
+      <g key={`touch-${i}`}>
+        <circle cx={p.x_m} cy={p.y_m} r="0.5" fill="white" opacity="0.7" />
+        {p.nearest_player && (
+          <text
+            x={p.x_m} y={p.y_m - 1.5}
+            fontSize="1.2" fill="white" opacity="0.8"
+            textAnchor="middle"
+            stroke="#1a1d2e" strokeWidth="0.4" paintOrder="stroke">
+            {p.nearest_player}
+          </text>
+        )}
+      </g>
+    ))
 
   return (
     <g>
+      {/* Faded player context dots at start of window */}
+      {contextPlayers?.filter(p => p.player_id !== -1).map(p => (
+        <circle key={p.player_id}
+          cx={p.x_m} cy={p.y_m} r={0.7}
+          fill={p.team === 'home' ? homeColor : awayColor}
+          opacity={0.3}
+          stroke="white" strokeWidth={0.1}
+        />
+      ))}
       {segments}
       {touchDots}
       {/* Start */}
@@ -70,7 +80,7 @@ function TrajectoryOverlay({ points }) {
       {/* End */}
       <circle cx={end.x_m} cy={end.y_m} r="0.9" fill="#ef4444" stroke="white" strokeWidth="0.2" />
       <text x={end.x_m + 1.2} y={end.y_m + 0.5} fill="#ef4444" fontSize="1.3" fontWeight="bold">■</text>
-      {/* Legend */}
+      {/* Speed legend */}
       {Object.entries(SPEED_COLORS).map(([cls, color], i) => (
         <g key={cls}>
           <circle cx={3} cy={3 + i * 3.5} r="0.8" fill={color} />
@@ -82,7 +92,7 @@ function TrajectoryOverlay({ points }) {
 }
 
 export default function BallTrajectory() {
-  const { matchId } = useMatchStore()
+  const { matchId, metadata } = useMatchStore()
   const [period, setPeriod] = useState(1)
   const [startMin, setStartMin] = useState(0)
   const [endMin, setEndMin] = useState(5)
@@ -243,7 +253,12 @@ export default function BallTrajectory() {
 
         <PitchSVG>
           {pts.length > 0
-            ? <TrajectoryOverlay points={displayPoints} />
+            ? <TrajectoryOverlay
+                points={displayPoints}
+                contextPlayers={data?.context_players}
+                homeColor={metadata?.home_team?.jersey_color || '#3b82f6'}
+                awayColor={metadata?.away_team?.jersey_color || '#ef4444'}
+              />
             : (
               <text x="52.5" y="34" fill="#555" fontSize="3" textAnchor="middle">
                 Select a time window above and click Show Trajectory
@@ -252,6 +267,15 @@ export default function BallTrajectory() {
           }
         </PitchSVG>
       </div>
+
+      {/* Possession legend */}
+      {pts.length > 0 && (
+        <div style={{ background: '#1a1d2e', borderRadius: 10, padding: '10px 16px', marginBottom: 16, fontSize: 12, color: '#aaa', display: 'flex', flexWrap: 'wrap', gap: 16 }}>
+          <span>🔵 Faded dots = player positions at start of window</span>
+          <span>⚪ White rings = estimated touch points</span>
+          <span>🏷️ Player labels at touch points = nearest player</span>
+        </div>
+      )}
 
       {/* Stats row */}
       {pts.length > 0 && (

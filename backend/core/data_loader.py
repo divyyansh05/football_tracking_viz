@@ -39,7 +39,21 @@ def load_match_metadata(json_path: Path) -> dict:
         )
     with open(json_path, "r", encoding="utf-8") as fh:
         data = json.load(fh)
-    logger.info("Loaded match metadata from %s (match_id=%s)", json_path, data.get("id"))
+
+    # Extract pitch dimensions (use defaults if not present)
+    pitch_length = data.get('pitch_length', 105.0)
+    pitch_width = data.get('pitch_width', 68.0)
+
+    # Store in metadata for later use
+    data['_pitch_dims'] = {
+        'length': float(pitch_length),
+        'width': float(pitch_width),
+        'x_offset': float(pitch_length / 2),
+        'y_offset': float(pitch_width / 2)
+    }
+
+    logger.info("Loaded match metadata from %s (match_id=%s, pitch=%dx%d)",
+                json_path, data.get("id"), pitch_length, pitch_width)
     return data
 
 
@@ -98,7 +112,7 @@ def resolve_tracking_path(raw_dir: Path, match_id: int) -> Path:
 
 
 def load_tracking_data(
-    jsonl_path: Path, processed_dir: Path, match_id: int
+    jsonl_path: Path, processed_dir: Path, match_id: int, match_data: dict = None
 ) -> pd.DataFrame:
     """Stream tracking JSONL, returning a DataFrame (with parquet caching).
 
@@ -110,6 +124,9 @@ def load_tracking_data(
 
     ball rows have player_id == -1.
     Frames before frame 20 and frames with no player_data are skipped.
+
+    Args:
+        match_data: Optional match metadata dict containing pitch dimensions
     """
     cache_path = processed_dir / f"{match_id}_tracking.parquet"
 
@@ -122,6 +139,15 @@ def load_tracking_data(
             f"Tracking JSONL not found: {jsonl_path}. "
             "Please upload tracking.jsonl via POST /api/upload/match."
         )
+
+    # Get pitch dimensions from match_data if available
+    if match_data and '_pitch_dims' in match_data:
+        x_offset = match_data['_pitch_dims']['x_offset']
+        y_offset = match_data['_pitch_dims']['y_offset']
+    else:
+        # Fall back to module-level constants
+        x_offset = X_OFFSET
+        y_offset = Y_OFFSET
 
     logger.info("Streaming tracking JSONL from %s — this may take a moment...", jsonl_path)
 
@@ -159,8 +185,8 @@ def load_tracking_data(
                         "player_id": int(pd_entry["player_id"]),
                         "x_raw": float(pd_entry["x"]),
                         "y_raw": float(pd_entry["y"]),
-                        "x_m": float(pd_entry["x"]) + X_OFFSET,
-                        "y_m": float(pd_entry["y"]) + Y_OFFSET,
+                        "x_m": float(pd_entry["x"]) + x_offset,
+                        "y_m": float(pd_entry["y"]) + y_offset,
                         "is_detected": bool(pd_entry.get("is_detected", True)),
                     }
                 )
@@ -178,8 +204,8 @@ def load_tracking_data(
                         "player_id": -1,
                         "x_raw": float(bx),
                         "y_raw": float(by),
-                        "x_m": float(bx) + X_OFFSET,
-                        "y_m": float(by) + Y_OFFSET,
+                        "x_m": float(bx) + x_offset,
+                        "y_m": float(by) + y_offset,
                         "is_detected": bool(ball.get("is_detected", True)),
                     }
                 )

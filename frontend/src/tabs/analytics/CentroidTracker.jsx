@@ -3,6 +3,8 @@ import { useMatchStore } from '../../store/matchStore'
 import { api } from '../../api/client'
 import Spinner from '../../components/ui/Spinner'
 import PitchSVG from '../../components/pitch/PitchSVG'
+import FrameControls from '../../components/controls/FrameControls'
+import { fmt } from '../../utils/format'
 
 function getZoneLabel(avgX, avgY) {
   const xZone = avgX < 35 ? 'Defensive Third' : avgX < 70 ? 'Middle Third' : 'Attacking Third'
@@ -172,20 +174,51 @@ export default function CentroidTracker() {
 
       {data && (
         <>
+          {/* Info bar */}
+          <div className="info-bar" style={{ background: '#1e2235', border: '1px solid #3a3d5e', borderRadius: 8, padding: 16, marginBottom: 24, display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+            <span style={{ fontSize: '20px' }}>ℹ️</span>
+            <span style={{ color: '#ccc', fontSize: '14px', lineHeight: '1.5' }}>
+              The <strong>centroid</strong> is the geometric center of all outfield players. It shows where each team's "weight" is on the pitch. Closer centroids = teams engaging each other. Trails show where each centroid has been this match.
+            </span>
+          </div>
+
           {/* Pitch */}
           <div style={{ background: '#1a1d2e', borderRadius: 12, padding: 16, marginBottom: 24 }}>
             <h3 style={{ marginBottom: 12, fontSize: 15, color: '#ccc' }}>Centroid Paths &amp; Current Position</h3>
             <div style={{ position: 'relative' }}>
               <PitchSVG>
-                {/* Full path trails */}
+                {/* Full path trails (faded) */}
                 <polyline
                   points={data.timeline.map(d => `${d.home_x},${d.home_y}`).join(' ')}
-                  fill="none" stroke={homeColor} strokeWidth="0.3" strokeOpacity="0.4"
+                  fill="none" stroke={homeColor} strokeWidth="0.3" strokeOpacity="0.2"
                 />
                 <polyline
                   points={data.timeline.map(d => `${d.away_x},${d.away_y}`).join(' ')}
-                  fill="none" stroke={awayColor} strokeWidth="0.3" strokeOpacity="0.4"
+                  fill="none" stroke={awayColor} strokeWidth="0.3" strokeOpacity="0.2"
                 />
+
+                {/* Recent trail (last 30 seconds = 300 frames at 10Hz) - higher opacity */}
+                {currentFrame && (() => {
+                  const recentThreshold = Math.max(0, currentFrame - 300)
+                  const recentHome = data.timeline.filter(d => (d.frame || 0) >= recentThreshold && (d.frame || 0) <= currentFrame)
+                  const recentAway = data.timeline.filter(d => (d.frame || 0) >= recentThreshold && (d.frame || 0) <= currentFrame)
+                  return (
+                    <>
+                      {recentHome.length > 1 && (
+                        <polyline
+                          points={recentHome.map(d => `${d.home_x},${d.home_y}`).join(' ')}
+                          fill="none" stroke={homeColor} strokeWidth="0.5" strokeOpacity="0.7"
+                        />
+                      )}
+                      {recentAway.length > 1 && (
+                        <polyline
+                          points={recentAway.map(d => `${d.away_x},${d.away_y}`).join(' ')}
+                          fill="none" stroke={awayColor} strokeWidth="0.5" strokeOpacity="0.7"
+                        />
+                      )}
+                    </>
+                  )
+                })()}
 
                 {/* Current positions */}
                 {homeCurrent && (
@@ -226,15 +259,51 @@ export default function CentroidTracker() {
               </PitchSVG>
             </div>
 
-            {/* Legend */}
-            <div style={{ display: 'flex', gap: 24, marginTop: 12, fontSize: 13, color: '#aaa' }}>
-              <span><span style={{ display: 'inline-block', width: 12, height: 3, background: homeColor, verticalAlign: 'middle', marginRight: 6 }}></span>{homeName} path</span>
-              <span><span style={{ display: 'inline-block', width: 12, height: 3, background: awayColor, verticalAlign: 'middle', marginRight: 6 }}></span>{awayName} path</span>
-              <span style={{ marginLeft: 'auto', color: '#60a5fa' }}>
-                Use the frame slider (Tracking tab) to move centroid positions
-              </span>
-            </div>
           </div>
+
+          {/* Frame controls */}
+          <FrameControls />
+
+          {/* Live centroid coordinate card */}
+          {homeCurrent && awayCurrent && (
+            <div className="centroid-live-card" style={{ background: '#1a1d2e', borderRadius: 12, padding: 20, marginTop: 24, marginBottom: 24 }}>
+              <h4 style={{ fontSize: 14, color: '#888', marginBottom: 16, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Live Centroid Positions (Frame {currentFrame || 0})
+              </h4>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16 }}>
+                <div className="centroid-stat" style={{ background: '#111827', borderRadius: 8, padding: 16, borderLeft: `4px solid ${homeColor}` }}>
+                  <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
+                    <span style={{ color: homeColor }}>●</span> {metadata.home_team.short_name} centroid
+                  </div>
+                  <div style={{ fontSize: 14, color: 'white' }}>
+                    x={fmt.coord(homeCurrent.x)} m
+                  </div>
+                  <div style={{ fontSize: 14, color: 'white' }}>
+                    y={fmt.coord(homeCurrent.y)} m
+                  </div>
+                </div>
+                <div className="centroid-stat" style={{ background: '#111827', borderRadius: 8, padding: 16, borderLeft: `4px solid ${awayColor}` }}>
+                  <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
+                    <span style={{ color: awayColor }}>●</span> {metadata.away_team.short_name} centroid
+                  </div>
+                  <div style={{ fontSize: 14, color: 'white' }}>
+                    x={fmt.coord(awayCurrent.x)} m
+                  </div>
+                  <div style={{ fontSize: 14, color: 'white' }}>
+                    y={fmt.coord(awayCurrent.y)} m
+                  </div>
+                </div>
+                <div className="centroid-stat" style={{ background: '#111827', borderRadius: 8, padding: 16, borderLeft: '4px solid #60a5fa' }}>
+                  <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
+                    ↔ Distance
+                  </div>
+                  <div style={{ fontSize: 22, color: '#60a5fa', fontWeight: 'bold' }}>
+                    {currentDist ? fmt.coord(currentDist) : '—'} m
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Territory cards */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 24 }}>

@@ -5,7 +5,7 @@ import Spinner from '../../components/ui/Spinner'
 import PitchSVG from '../../components/pitch/PitchSVG'
 
 export default function FormationTracker() {
-  const { matchId, metadata } = useMatchStore()
+  const { matchId, metadata, pitchDimensions } = useMatchStore()
   
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -63,7 +63,7 @@ export default function FormationTracker() {
       plot_bgcolor: 'transparent',
       font: { color: '#ccc' },
       xaxis: { title: 'Match Window', gridcolor: '#333' },
-      yaxis: { title: 'Average Depth (x_m)', gridcolor: '#333', range: [0, 105] },
+      yaxis: { title: 'Average Depth (x_m)', gridcolor: '#333', range: [0, pitchDimensions.length] },
       margin: { l: 50, r: 20, t: 40, b: 50 },
       showlegend: false
     }
@@ -118,11 +118,25 @@ export default function FormationTracker() {
 
     const nodes = players.map(p => (
       <g key={p.player_id}>
-        <circle cx={p.avg_x} cy={p.avg_y} r={1.5} fill={teamColor} stroke="white" strokeWidth={0.2} />
-        <text x={p.avg_x} y={p.avg_y} textAnchor="middle" dominantBaseline="central" fill="white" fontSize={1.2} fontWeight="bold">
+        <circle cx={p.avg_x} cy={p.avg_y} r={1.5} fill={teamColor} stroke="white" strokeWidth={0.2} opacity={0.9} />
+        {/* Jersey number inside dot */}
+        <text x={p.avg_x} y={p.avg_y + 0.5} textAnchor="middle" dominantBaseline="central" fill="white" fontSize={1.2} fontWeight="bold">
           {p.number || ''}
         </text>
-        <text x={p.avg_x} y={p.avg_y + 2.2} textAnchor="middle" fill="white" fontSize={1.0}>
+        {/* Position acronym below dot */}
+        <text
+          x={p.avg_x} y={p.avg_y + 3.2}
+          textAnchor="middle" fontSize={1.4}
+          fill={teamColor}
+          stroke="black" strokeWidth={0.15}
+          paintOrder="stroke">
+          {p.position}
+        </text>
+        {/* Last name below position */}
+        <text
+          x={p.avg_x} y={p.avg_y + 5.0}
+          textAnchor="middle" fontSize={1.0}
+          fill="white" opacity={0.7}>
           {p.last_name || p.name}
         </text>
       </g>
@@ -139,9 +153,35 @@ export default function FormationTracker() {
   const renderPitchForWindow = (windowIndex) => {
     if (!data || !data.windows[windowIndex]) return null
     const w = data.windows[windowIndex]
+    const homeFormation = w.home_formation || null
+    const awayFormation = w.away_formation || null
 
     return (
       <div style={{ position: 'relative' }}>
+        {/* Formation badges */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, flexWrap: 'wrap', gap: 8 }}>
+          {(teamFilter === 'both' || teamFilter === 'home') && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ color: metadata.home_team.jersey_color, fontWeight: 'bold', fontSize: 13 }}>
+                {metadata.home_team.short_name}
+              </span>
+              <span className="formation-badge">
+                {homeFormation && homeFormation !== 'N/A' ? homeFormation : 'Detecting...'}
+              </span>
+            </div>
+          )}
+          {(teamFilter === 'both' || teamFilter === 'away') && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ color: metadata.away_team.jersey_color, fontWeight: 'bold', fontSize: 13 }}>
+                {metadata.away_team.short_name}
+              </span>
+              <span className="formation-badge">
+                {awayFormation && awayFormation !== 'N/A' ? awayFormation : 'Detecting...'}
+              </span>
+            </div>
+          )}
+        </div>
+
         {loading && (
           <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(26,29,46,0.7)', zIndex: 10, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
             <Spinner />
@@ -151,6 +191,16 @@ export default function FormationTracker() {
           {(teamFilter === 'both' || teamFilter === 'home') && renderPlayerNodes(w.home_players, metadata.home_team.jersey_color)}
           {(teamFilter === 'both' || teamFilter === 'away') && renderPlayerNodes(w.away_players, metadata.away_team.jersey_color)}
         </PitchSVG>
+
+        {/* Formation explanation collapsible */}
+        <details className="formation-explanation" style={{ marginTop: 10 }}>
+          <summary style={{ cursor: 'pointer', color: '#94a3b8', fontSize: 12 }}>What does this mean?</summary>
+          <p style={{ color: '#94a3b8', fontSize: 12, margin: '8px 0 0', lineHeight: 1.6 }}>
+            Formation shows the average shape of each team during this {windowMinutes}-minute window.
+            Numbers represent lines: <strong style={{ color: 'white' }}>Defenders — Midfielders — Forwards</strong>.
+            Note: automatic detection may vary for unusual or fluid formations.
+          </p>
+        </details>
       </div>
     )
   }

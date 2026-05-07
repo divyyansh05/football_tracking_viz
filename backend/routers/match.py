@@ -34,6 +34,7 @@ from models import (
     MinimalPlayerFrame,
     PeriodInfo,
     PitchControlResponse,
+    PitchDimensions,
     PlayerFrameData,
     PlayerInfo,
     PlayerStatsResponse,
@@ -53,6 +54,9 @@ PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 _match_data_cache: dict[int, dict] = {}
 _tracking_df_cache: dict[int, pd.DataFrame] = {}
 _player_lookup_cache: dict[int, dict] = {}
+
+# ─── Pitch control per-frame cache (FIX 15a) ──────────────────────────────────
+_pitch_control_cache: dict[str, dict] = {}
 
 router = APIRouter(prefix="/api/match", tags=["match"])
 
@@ -137,7 +141,7 @@ def get_match_resources(match_id: int) -> tuple[dict, pd.DataFrame, dict]:
         player_lookup = data_loader.build_player_lookup(match_data)
 
         try:
-            tracking_df = data_loader.load_tracking_data(jsonl_path, PROCESSED_DIR, match_id)
+            tracking_df = data_loader.load_tracking_data(jsonl_path, PROCESSED_DIR, match_id, match_data)
         except FileNotFoundError:
             raise HTTPException(
                 status_code=404,
@@ -199,6 +203,14 @@ def get_match_metadata(match_id: int) -> MatchMetadata:
             for p in match_data.get("match_periods", [])
         ]
 
+        # Get pitch dimensions
+        pitch_dims = match_data.get("_pitch_dims", {
+            "length": 105.0,
+            "width": 68.0,
+            "x_offset": 52.5,
+            "y_offset": 34.0
+        })
+
         return MatchMetadata(
             match_id=match_data["id"],
             home_team=TeamInfo(
@@ -227,6 +239,7 @@ def get_match_metadata(match_id: int) -> MatchMetadata:
             round=match_data.get("competition_round", {}).get("name", ""),
             match_periods=periods_out,
             players=players_out,
+            pitch=pitch_dims,
         )
 
     except HTTPException:
@@ -367,6 +380,11 @@ def get_frames_batch(
 @router.get("/{match_id}/pitch-control/{frame_number}", response_model=PitchControlResponse)
 def get_pitch_control(match_id: int, frame_number: int) -> PitchControlResponse:
     """Compute and return pitch control heatmap for a single frame."""
+    # Check per-frame cache first (FIX 15a)
+    cache_key = f"{match_id}_{frame_number}"
+    if cache_key in _pitch_control_cache:
+        return _pitch_control_cache[cache_key]
+
     try:
         match_data, tracking_df, player_lookup = get_match_resources(match_id)
         home_team_id = match_data["home_team"]["id"]
@@ -393,13 +411,63 @@ def get_pitch_control(match_id: int, frame_number: int) -> PitchControlResponse:
             )
 
         result = pc.compute_pitch_control(enriched, home_team_id)
-        return PitchControlResponse(
+
+        # Compute box control percentages
+        import numpy as np
+        pitch_length = match_data.get('_pitch_dims', {}).get('length', 105.0)
+        pitch_width = match_data.get('_pitch_dims', {}).get('width', 68.0)
+
+        x_arr = np.array(result['x_coords'])
+        y_arr = np.array(result['y_coords'])
+        grid = np.array(result['home_pct'])
+
+        box_y_min = (pitch_width - 40.32) / 2
+        box_y_max = (pitch_width + 40.32) / 2
+
+        # Home attacking box (right side)
+        home_box_x_mask = x_arr >= (pitch_length - 16.5)
+        home_box_y_mask = (y_arr >= box_y_min) & (y_arr <= box_y_max)
+
+        if np.any(home_box_x_mask) and np.any(home_box_y_mask):
+            home_box_cells = grid[np.ix_(home_box_y_mask, home_box_x_mask)]
+            home_box_control = float(np.mean(home_box_cells)) * 100
+        else:
+            home_box_control = 50.0
+
+        # Away attacking box (left side)
+        away_box_x_mask = x_arr <= 16.5
+        away_box_y_mask = (y_arr >= box_y_min) & (y_arr <= box_y_max)
+
+        if np.any(away_box_x_mask) and np.any(away_box_y_mask):
+            away_box_cells = grid[np.ix_(away_box_y_mask, away_box_x_mask)]
+            away_box_control = float(np.mean(away_box_cells)) * 100
+        else:
+            away_box_control = 50.0
+
+        box_control = {
+            "home_attacking_box": round(home_box_control, 1),
+            "away_attacking_box": round(100 - away_box_control, 1),
+            "home_defending_box": round(100 - away_box_control, 1),
+            "away_defending_box": round(home_box_control, 1)
+        }
+
+        response = PitchControlResponse(
             frame=frame_number,
             home_pct=result["home_pct"],
             x_coords=result["x_coords"],
             y_coords=result["y_coords"],
             summary=result["summary"],
+            box_control=box_control
         )
+
+        # Store in cache; evict oldest 100 if cache exceeds 500 entries
+        _pitch_control_cache[cache_key] = response
+        if len(_pitch_control_cache) > 500:
+            oldest_keys = list(_pitch_control_cache.keys())[:100]
+            for k in oldest_keys:
+                del _pitch_control_cache[k]
+
+        return response
 
     except HTTPException:
         raise
@@ -533,3 +601,24 @@ def get_voronoi(match_id: int, frame_number: int) -> VoronoiResponse:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Internal error: {str(exc)}")
+
+
+# ─── ENDPOINT 8: Match status (FIX 15c) ───────────────────────────────────────
+@router.get("/{match_id}/status")
+def get_match_status(match_id: int):
+    """Return readiness status for a match (parquet cache, in-memory, files)."""
+    parquet_path = PROCESSED_DIR / f"{match_id}_tracking.parquet"
+    match_json = RAW_DATA_DIR / f"{match_id}_match_data.json"
+    tracking_jsonl = RAW_DATA_DIR / f"{match_id}_tracking.jsonl"
+    tracking_jsonl_alt = RAW_DATA_DIR / f"{match_id}_tracking_data.jsonl"
+
+    has_tracking = tracking_jsonl.exists() or tracking_jsonl_alt.exists()
+
+    return {
+        "match_id": match_id,
+        "has_match_json": match_json.exists(),
+        "has_tracking_jsonl": has_tracking,
+        "has_parquet_cache": parquet_path.exists(),
+        "is_in_memory": match_id in _tracking_df_cache,
+        "status": "ready" if parquet_path.exists() else ("processing" if has_tracking else "missing"),
+    }
